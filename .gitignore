@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# LLM disk cache — may contain parsed customer documents
+.cache/
+*.diskcache/
+
+# Customer fixture data
+tests/fixtures/survey.xml
+
+# Editor swap files (keep .cursor/ and .vscode/ shared configs)
+*.swp
+*.swo
+*~

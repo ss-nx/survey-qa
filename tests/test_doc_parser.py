@@ -1,0 +1,269 @@
+"""Tests for doc_parser — extractor, chunker, and parser wiring.
+
+LLM calls are mocked throughout; these tests never hit a real API.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from survey_qa.core.models import ParsedOption, ParsedQuestion, QuestionnaireModel
+from survey_qa.doc_parser.chunker import TextChunk, batch_chunks, split_into_chunks
+from survey_qa.doc_parser.config import LLMConfig, load_config
+from survey_qa.doc_parser.llm_extractor import _cache_key, extract_questions
+
+
+# ── Config ────────────────────────────────────────────────────────────────────
+
+
+def test_load_config_defaults():
+    cfg = load_config()
+    assert cfg.model == "gpt-4o-mini"
+    assert cfg.max_retries == 3
+    assert "survey_qa" in str(cfg.cache_dir)
+
+
+def test_load_config_env_override(monkeypatch):
+    monkeypatch.setenv("LITELLM_MODEL", "gpt-4o")
+    monkeypatch.setenv("QA_LLM_RETRIES", "5")
+    cfg = load_config()
+    assert cfg.model == "gpt-4o"
+    assert cfg.max_retries == 5
+
+
+# ── Chunker ───────────────────────────────────────────────────────────────────
+
+
+SAMPLE_QUESTIONNAIRE = """\
+Q1. How often do you use our product?
+1. Daily
+2. Weekly
+3. Monthly
+4. Never
+
+Q2. Please rate your satisfaction.
+1. Very satisfied
+2. Satisfied
+3. Neutral
+4. Dissatisfied
+
+Q3. What could we improve? (Open-ended)
+"""
+
+UNSTRUCTURED_TEXT = "This is a general instructions page with no question codes."
+
+
+def test_split_detects_question_boundaries():
+    chunks = split_into_chunks(SAMPLE_QUESTIONNAIRE)
+    assert len(chunks) == 3
+
+
+def test_split_chunk_labels():
+    chunks = split_into_chunks(SAMPLE_QUESTIONNAIRE)
+    assert chunks[0].text.startswith("Q1.")
+    assert chunks[1].text.startswith("Q2.")
+    assert chunks[2].text.startswith("Q3.")
+
+
+def test_split_preserves_start_line():
+    chunks = split_into_chunks(SAMPLE_QUESTIONNAIRE)
+    assert chunks[0].start_line == 0
+    assert chunks[1].start_line > 0
+
+
+def test_split_no_structure_returns_single_chunk():
+    chunks = split_into_chunks(UNSTRUCTURED_TEXT)
+    assert len(chunks) == 1
+    assert chunks[0].text == UNSTRUCTURED_TEXT.strip()
+
+
+def test_batch_chunks_single_batch_for_small_doc():
+    chunks = split_into_chunks(SAMPLE_QUESTIONNAIRE)
+    batches = batch_chunks(chunks)
+    assert len(batches) == 1
+    assert len(batches[0]) == 3
+
+
+def test_batch_chunks_splits_large_doc():
+    # Create chunks that exceed the per-batch limit
+    big_chunk = TextChunk(text="Q" * 25_001, start_line=0)
+    chunks = [big_chunk] * 3
+    batches = batch_chunks(chunks)
+    assert len(batches) > 1
+
+
+def test_batch_chunks_never_splits_single_chunk():
+    """A single oversized chunk should still appear in exactly one batch."""
+    huge_chunk = TextChunk(text="Q" * 200_000, start_line=0)
+    batches = batch_chunks([huge_chunk])
+    assert len(batches) == 1
+
+
+# ── Cache key ─────────────────────────────────────────────────────────────────
+
+
+def test_cache_key_is_deterministic():
+    k1 = _cache_key("hello world", "gpt-4o-mini")
+    k2 = _cache_key("hello world", "gpt-4o-mini")
+    assert k1 == k2
+
+
+def test_cache_key_differs_for_different_text():
+    k1 = _cache_key("text A", "gpt-4o-mini")
+    k2 = _cache_key("text B", "gpt-4o-mini")
+    assert k1 != k2
+
+
+def test_cache_key_differs_for_different_model():
+    k1 = _cache_key("same text", "gpt-4o-mini")
+    k2 = _cache_key("same text", "gpt-4o")
+    assert k1 != k2
+
+
+# ── extract_questions (mocked LLM + cache) ────────────────────────────────────
+
+
+def _make_config(tmp_path: Path) -> LLMConfig:
+    return LLMConfig(model="gpt-4o-mini", cache_dir=tmp_path / "cache", max_retries=1)
+
+
+def _stub_questions() -> list[ParsedQuestion]:
+    return [
+        ParsedQuestion(
+            label="Q1",
+            text="How often do you use our product?",
+            type_hint="radio",
+            options=[
+                ParsedOption(code="1", text="Daily"),
+                ParsedOption(code="2", text="Weekly"),
+            ],
+        ),
+        ParsedQuestion(
+            label="Q2",
+            text="Please rate your satisfaction.",
+            type_hint="radio",
+        ),
+    ]
+
+
+@patch("survey_qa.doc_parser.llm_extractor._get_client")
+def test_extract_questions_calls_llm_on_cache_miss(mock_get_client, tmp_path):
+    from survey_qa.doc_parser.llm_extractor import _ExtractionResult
+
+    mock_client = MagicMock()
+    mock_get_client.return_value = mock_client
+    mock_client.chat.completions.create.return_value = _ExtractionResult(
+        questions=_stub_questions()
+    )
+
+    config = _make_config(tmp_path)
+    result = extract_questions(SAMPLE_QUESTIONNAIRE, config)
+
+    assert len(result) == 2
+    assert result[0].label == "Q1"
+    mock_client.chat.completions.create.assert_called_once()
+
+
+@patch("survey_qa.doc_parser.llm_extractor._get_client")
+def test_extract_questions_returns_cached_result(mock_get_client, tmp_path):
+    """Second call with same text must not hit the LLM."""
+    from survey_qa.doc_parser.llm_extractor import _ExtractionResult
+
+    mock_client = MagicMock()
+    mock_get_client.return_value = mock_client
+    mock_client.chat.completions.create.return_value = _ExtractionResult(
+        questions=_stub_questions()
+    )
+
+    config = _make_config(tmp_path)
+    extract_questions(SAMPLE_QUESTIONNAIRE, config)  # prime the cache
+    extract_questions(SAMPLE_QUESTIONNAIRE, config)  # should be served from cache
+
+    # LLM called only once despite two invocations
+    assert mock_client.chat.completions.create.call_count == 1
+
+
+@patch("survey_qa.doc_parser.llm_extractor._get_client")
+def test_extract_questions_cache_miss_on_new_text(mock_get_client, tmp_path):
+    from survey_qa.doc_parser.llm_extractor import _ExtractionResult
+
+    mock_client = MagicMock()
+    mock_get_client.return_value = mock_client
+    mock_client.chat.completions.create.return_value = _ExtractionResult(
+        questions=_stub_questions()
+    )
+
+    config = _make_config(tmp_path)
+    extract_questions("Different text entirely.", config)
+    extract_questions("Another different text.", config)
+
+    assert mock_client.chat.completions.create.call_count == 2
+
+
+# ── DocxParser wiring (no real docx file) ────────────────────────────────────
+
+
+@patch("survey_qa.doc_parser.docx_parser.extract_docx")
+@patch("survey_qa.doc_parser.docx_parser.extract_questions")
+def test_docx_parser_wires_extractor_and_llm(mock_extract_q, mock_extract_docx, tmp_path):
+    from survey_qa.doc_parser.docx_parser import DocxParser
+
+    mock_extract_docx.return_value = SAMPLE_QUESTIONNAIRE
+    mock_extract_q.return_value = _stub_questions()
+
+    config = _make_config(tmp_path)
+    parser = DocxParser(config=config)
+    result = parser.parse(Path("fake.docx"))
+
+    assert isinstance(result, QuestionnaireModel)
+    assert len(result.questions) == 2
+    mock_extract_docx.assert_called_once_with(Path("fake.docx"))
+
+
+# ── PdfParser wiring ──────────────────────────────────────────────────────────
+
+
+@patch("survey_qa.doc_parser.pdf_parser.extract_pdf")
+@patch("survey_qa.doc_parser.pdf_parser.extract_questions")
+def test_pdf_parser_wires_extractor_and_llm(mock_extract_q, mock_extract_pdf, tmp_path):
+    from survey_qa.doc_parser.pdf_parser import PdfParser
+
+    mock_extract_pdf.return_value = SAMPLE_QUESTIONNAIRE
+    mock_extract_q.return_value = _stub_questions()
+
+    config = _make_config(tmp_path)
+    parser = PdfParser(config=config)
+    result = parser.parse(Path("fake.pdf"))
+
+    assert isinstance(result, QuestionnaireModel)
+    assert len(result.questions) == 2
+    mock_extract_pdf.assert_called_once_with(Path("fake.pdf"))
+
+
+# ── Factory routing ───────────────────────────────────────────────────────────
+
+
+def test_factory_returns_docx_parser():
+    from survey_qa.doc_parser.base import QuestionnaireParser
+
+    parser = QuestionnaireParser.for_file(Path("survey.docx"))
+    from survey_qa.doc_parser.docx_parser import DocxParser
+    assert isinstance(parser, DocxParser)
+
+
+def test_factory_returns_pdf_parser():
+    from survey_qa.doc_parser.base import QuestionnaireParser
+
+    parser = QuestionnaireParser.for_file(Path("survey.pdf"))
+    from survey_qa.doc_parser.pdf_parser import PdfParser
+    assert isinstance(parser, PdfParser)
+
+
+def test_factory_raises_for_unknown_extension():
+    from survey_qa.doc_parser.base import QuestionnaireParser
+
+    with pytest.raises(ValueError, match="Unsupported"):
+        QuestionnaireParser.for_file(Path("survey.xlsx"))

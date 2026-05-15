@@ -1,0 +1,84 @@
+---
+description: Survey QA Tool — persistent project context for all sessions
+alwaysApply: true
+---
+
+# Survey QA Tool
+
+A Python CLI tool that compares a Decipher XML survey against a client questionnaire (Word/PDF) and outputs a structured QA report. The questionnaire is always the source of truth.
+
+## Module structure
+
+The package is split into focused sub-modules with a strict dependency direction — lower layers never import from higher ones:
+
+```
+survey_qa/
+├── core/          ← models + utils only. No I/O, no business logic.
+├── xml_parser/    ← Decipher XML → SurveyModel. Imports core only.
+├── doc_parser/    ← docx/pdf + LLM → QuestionnaireModel. Imports core only.
+├── checks/        ← QA check registry + rules. Imports core only.
+└── api/           ← FastAPI + CLI. The ONLY module that imports from all others.
+```
+
+Dependency direction: `core` → (`xml_parser` | `doc_parser` | `checks`) → `api`
+
+## Architecture data flow
+
+Two independent parsers converge on the same Pydantic models, which the check layer consumes. Parsers and checks are fully decoupled.
+
+```
+Questionnaire (docx/pdf) → [doc_parser: Extractor → Chunker → LLM Parser] ─┐
+                                                                              ├→ checks → Findings → api (FastAPI / CLI)
+Decipher XML             → [xml_parser]                                     ─┘
+```
+
+## Questionnaire parsing is two-stage
+
+**Stage 1 (local, free):** `python-docx` / `pdfplumber` extract raw text with structural signals (bold, indentation, blank lines, table cells). A heuristic chunker groups text into question-candidate blocks. No interpretation here — just noise reduction.
+
+**Stage 2 (LLM, cached):** Batches of ~8 blocks go to the LLM via `instructor` + `litellm`. The response is typed as `list[ParsedQuestion]` directly — no JSON parsing. Results are cached by `sha256(block_text + model_name)` via `diskcache`. Re-running on the same doc is free.
+
+Default model: `gpt-4o-mini`. Override with `LITELLM_MODEL` env var.
+
+## Shared models (`src/survey_qa/core/models.py`)
+
+All parsers output these Pydantic v2 models. Never bypass them.
+
+- `ParsedQuestion` — label, text, type_hint, options, routing_rules, confidence, source_location
+- `ParsedOption` — code, text
+- `RoutingRule` — raw routing text (interpreted by routing checks)
+- `Finding` — check_id, severity, question_label, message, detail
+
+## Check registry pattern
+
+Each check is a class in `src/survey_qa/checks/`. It must:
+- Inherit from `Check` (defined in `checks/base.py`)
+- Implement `run(q: ParsedQuestion, x: ParsedQuestion) -> list[Finding]`
+- Self-register via the `@register_check` decorator
+
+Adding a new check = one new class. Never modify the registry or runner to add checks.
+
+## XML parser has no LLM
+
+Decipher XML is deterministic. Use `lxml` only. No LLM calls in `xml_parser.py`.
+
+## Testing rules
+
+- Never make real LLM calls in tests. Use fixture `ParsedQuestion` objects.
+- Sample `.docx`, `.pdf`, and `.xml` files live in `tests/fixtures/`.
+- Mock `instructor` / `litellm` at the boundary in `llm_parser.py`.
+
+## Key libraries
+
+| Purpose | Library |
+|---|---|
+| XML parsing | `lxml` |
+| docx extraction | `python-docx` |
+| PDF extraction | `pdfplumber` |
+| LLM structured output | `instructor` |
+| LLM provider abstraction | `litellm` |
+| Parse result cache | `diskcache` |
+| Data models | `pydantic` v2 |
+| CLI | `typer` |
+| Terminal output | `rich` |
+| Excel reports | `openpyxl` |

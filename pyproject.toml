@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "survey-qa"
+version = "0.1.0"
+description = "QA tool comparing Decipher XML surveys against client questionnaires"
+requires-python = ">=3.12"
+dependencies = [
+    "lxml>=5.3",
+    "python-docx>=1.1",
+    "pdfplumber>=0.11",
+    "instructor>=1.7",
+    "litellm>=1.55",
+    "diskcache>=5.6",
+    "pydantic>=2.10",
+    "rich>=13.9",
+    "openpyxl>=3.1",
+    "typer>=0.15",
+    "rapidfuzz>=3.10",
+]
+
+[project.scripts]
+survey-qa = "survey_qa.api.cli:app"
+
+[project.optional-dependencies]
+api = [
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "python-multipart>=0.0.12",
+]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "python-multipart>=0.0.12",
+    "httpx>=0.28",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/survey_qa"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+src = ["src"]
+line-length = 100

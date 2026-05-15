@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": ".cursor/hooks/guard-api-calls.sh",
+        "matcher": "survey.?qa|cli\\.py|uv run",
+        "failClosed": false
+      }
+    ]
+  }
+}
