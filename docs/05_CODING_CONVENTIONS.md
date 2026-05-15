@@ -34,7 +34,7 @@ class XmlRadio(BaseModel):
     cond: str | None = None
     optional: bool = False
     where: str | None = None
-    _meta: ParserMeta | None = None  # parser annotations; check-invisible
+    parser_meta: ParserMeta | None = None  # parser annotations; check-invisible
 
 XmlElement = Annotated[
     XmlRadio | XmlCheckbox | XmlText | XmlNumber | XmlSelect | XmlFloat,
@@ -49,9 +49,9 @@ The discriminator (`tag`) means misclassified elements fail at parse time, not s
 
 ---
 
-## Parser Metadata: The `_meta` Field
+## Parser Metadata: The `parser_meta` Field
 
-Each element has an optional `_meta: ParserMeta | None = None` field. This is where parser-side annotations go — confidence, source excerpt, ambiguity notes.
+Each element has an optional `parser_meta: ParserMeta | None = None` field. This is where parser-side annotations go — confidence, source excerpt, ambiguity notes.
 
 ```python
 class ParserMeta(BaseModel):
@@ -63,12 +63,12 @@ class ParserMeta(BaseModel):
 ```
 
 **Rules**:
-- The XML parser leaves `_meta = None` (or sets `source="xml"` with nothing else).
-- The doc parser populates `_meta` with confidence and any caveats.
-- **Checks ignore `_meta`** — it is not part of the semantic comparison.
-- **Reporters can read `_meta`** — surface it when relevant (e.g. "this question's label was guessed").
+- The XML parser leaves `parser_meta = None` (or sets `source="xml"` with nothing else).
+- The doc parser populates `parser_meta` with confidence and any caveats.
+- **Checks ignore `parser_meta`** — it is not part of the semantic comparison.
+- **Reporters can read `parser_meta`** — surface it when relevant (e.g. "this question's label was guessed").
 
-If the doc parser can't translate plain-English display logic into a valid `cond` expression, it leaves `cond = None` and stores the raw English in `_meta.raw_display_logic`.
+If the doc parser can't translate plain-English display logic into a valid `cond` expression, it leaves `cond = None` and stores the raw English in `parser_meta.raw_display_logic`.
 
 ---
 
@@ -82,7 +82,7 @@ The doc parser is tied to the **model schema**, not to the check registry.
 - Call LLM via `instructor` + `litellm` with the unified Pydantic schema as the response model
 - Populate every field it can extract from the source text
 - Leave fields it can't extract as `None`
-- Populate `_meta` with confidence, source excerpt, and any ambiguity notes
+- Populate `parser_meta` with confidence, source excerpt, and any ambiguity notes
 - Translate plain-English display logic into Decipher syntax for `cond`, using `07_DECIPHER_FUNCTION_LIBRARY.md` as the reference for valid functions (`ans`, `flt`, `label`, etc.)
 - Cache results by `SHA-256(text + model_name + schema_version)` — schema changes invalidate the cache automatically
 - Raise `DocParseError` with a clear message if extraction fails
@@ -98,7 +98,7 @@ The doc parser must not consult the check registry. Checks consume the model; th
 - Produce instances of the unified `XmlElement` types
 - Skip non-question structural elements where appropriate (`<suspend/>`, `<condition>`, `<quota>`, `<html>`, elements with `where="execute"` only)
 - Strip HTML tags from `<title>` text
-- Leave `_meta = None`
+- Leave `parser_meta = None`
 - Raise `XMLParseError` with a clear message if the file is malformed
 
 The XML parser must never call an LLM. It is deterministic by design.
@@ -112,7 +112,7 @@ Checks live in `survey_qa/checks/`. Each check is a class that inherits from `Ch
 ### Step 1 — Write the class
 
 ```python
-# survey_qa/checks/radio.py
+# survey_qa/checks/radio_checks.py
 
 from survey_qa.checks import register_check, Check
 from survey_qa.core.models import XmlRadio, Finding, Severity
@@ -191,7 +191,7 @@ class XmlRanking(BaseModel):
     rows: list[XmlRow]
     cond: str | None = None
     rank_max: int | None = None
-    _meta: ParserMeta | None = None
+    parser_meta: ParserMeta | None = None
 
 # Add to the discriminated union:
 XmlElement = Annotated[
@@ -411,7 +411,7 @@ When working on this codebase:
 - **One model, both parsers** — there is no `ParsedQuestion` or `QuestionnaireModel`. Doc parser produces `XmlRadio`, `XmlCheckbox`, etc.
 - **Check signatures are symmetric** — `run(xml_side: XmlRadio, doc_side: XmlRadio)`. Same type on both sides.
 - **Doc parser is tied to the model**, not to the check registry. Never read the check registry from the doc parser.
-- **`_meta` is parser metadata** — checks ignore it; reporters surface it.
+- **`parser_meta` is parser metadata** — checks ignore it; reporters surface it.
 - **Cache LLM results** — always. Include `schema_version` in the cache key.
 - **XML parser is deterministic** — never introduce LLM calls into it.
 - **Always normalize labels** before running checks.

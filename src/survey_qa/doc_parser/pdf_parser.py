@@ -4,20 +4,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..core.models import QuestionnaireModel
+from ..core.models import SurveyModel
 from .base import QuestionnaireParser
 from .config import LLMConfig, load_config
 from .extractor import extract_pdf
-from .llm_extractor import extract_questions
+from .llm_extractor import extract_survey
 
 
 class PdfParser(QuestionnaireParser):
-    """Parse a PDF questionnaire document into a QuestionnaireModel."""
+    """Parse a PDF questionnaire document into the unified SurveyModel."""
 
     def __init__(self, config: LLMConfig | None = None) -> None:
         self._config = config or load_config()
 
-    def parse(self, path: Path) -> QuestionnaireModel:
+    def parse(self, path: Path) -> SurveyModel:
         text = extract_pdf(path)
-        questions = extract_questions(text, self._config)
-        return QuestionnaireModel(questions=questions)
+        return extract_survey(text, self._config)

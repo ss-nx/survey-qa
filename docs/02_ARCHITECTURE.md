@@ -27,7 +27,7 @@
 │  SurveyModel — populated by both parsers             │
 │  XmlElement (discriminated union by tag)             │
 │  XmlRadio, XmlCheckbox, XmlText, XmlSelect, ...      │
-│  Optional _meta field (parser metadata, doc only)    │
+│  Optional parser_meta field (doc-side annotations)   │
 └──────────────────────┬───────────────────────────────┘
                        │
                        ▼
@@ -98,9 +98,9 @@ Why one model instead of two:
 
 Fields that the doc can't express (e.g. `rowstyle`, `where`, `aggregate`) stay `None` on the doc side. Checks naturally skip them when either side is missing the value.
 
-### 2. Parser Metadata via Optional `_meta` Field
+### 2. Parser Metadata via Optional `parser_meta` Field
 
-Each element type has an optional `_meta: ParserMeta | None = None` field for parser-side annotations:
+Each element type has an optional `parser_meta: ParserMeta | None = None` field for parser-side annotations:
 
 ```python
 class ParserMeta(BaseModel):
@@ -111,9 +111,9 @@ class ParserMeta(BaseModel):
     raw_display_logic: str | None = None   # plain English when cond couldn't be translated
 ```
 
-- XML parser leaves `_meta = None` (or sets `source="xml"` with no other fields)
-- Doc parser populates `_meta` with confidence, source excerpt, ambiguity notes
-- `_meta` is **reporter-visible** but **check-invisible** — checks compare semantic fields only
+- XML parser leaves `parser_meta = None` (or sets `source="xml"` with no other fields)
+- Doc parser populates `parser_meta` with confidence, source excerpt, ambiguity notes
+- `parser_meta` is **reporter-visible** but **check-invisible** — checks compare semantic fields only
 
 ### 3. Three-Stage Doc Parser (Cost Control)
 
@@ -131,7 +131,7 @@ Results are cached by `SHA-256(text + model_name + schema_version)` using `diskc
 
 Both parsers populate `cond` with **Decipher syntax** (e.g. `ans(S6,[r1])`, `flt(S8) >= 18`). The doc parser uses the Decipher function library reference (see `07_DECIPHER_FUNCTION_LIBRARY.md`) to translate plain-English display logic from the doc into actual Decipher expressions.
 
-If the doc parser can't produce valid syntax (e.g. ambiguous English, missing label reference), it leaves `cond = None` and stores the raw English in `_meta.raw_display_logic`. The condition-matching check fires on that case.
+If the doc parser can't produce valid syntax (e.g. ambiguous English, missing label reference), it leaves `cond = None` and stores the raw English in `parser_meta.raw_display_logic`. The condition-matching check fires on that case.
 
 When both sides have valid `cond` expressions, comparison becomes a direct string match (or AST diff) — no LLM-judged semantic equivalence needed.
 
@@ -236,7 +236,7 @@ class XmlRadio(BaseModel):
     cond: str | None = None
     optional: bool = False
     where: str | None = None
-    _meta: ParserMeta | None = None    # parser annotations; check-invisible
+    parser_meta: ParserMeta | None = None    # parser annotations; check-invisible
 
 class SurveyModel(BaseModel):
     elements: list[XmlElement]
@@ -259,7 +259,7 @@ Fields are optional where the doc parser may not be able to populate them. The X
 Three sheets:
 - **Summary** — count of ERROR / WARNING / INFO, pass/fail per question
 - **Findings** — full findings table, color-coded by severity
-- **Questions** — all questions from both sides for reference; `_meta` shown in a separate column when populated
+- **Questions** — all questions from both sides for reference; `parser_meta` shown in a separate column when populated
 
 ### Console (rich terminal)
 Color-coded table, suitable for CI/CD output.

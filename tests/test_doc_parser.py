@@ -10,10 +10,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from survey_qa.core.models import ParsedOption, ParsedQuestion, QuestionnaireModel
+from survey_qa.core.models import SurveyModel
 from survey_qa.doc_parser.chunker import TextChunk, batch_chunks, split_into_chunks
 from survey_qa.doc_parser.config import LLMConfig, load_config
-from survey_qa.doc_parser.llm_extractor import _cache_key, extract_questions
+from survey_qa.doc_parser.llm_extractor import (
+    _cache_key,
+    _ExtractedOption,
+    _ExtractedQuestion,
+    _ExtractionResult,
+    extract_survey,
+)
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -123,25 +129,25 @@ def test_cache_key_differs_for_different_model():
     assert k1 != k2
 
 
-# ── extract_questions (mocked LLM + cache) ────────────────────────────────────
+# ── extract_survey (mocked LLM + cache) ───────────────────────────────────────
 
 
 def _make_config(tmp_path: Path) -> LLMConfig:
     return LLMConfig(model="gpt-4o-mini", cache_dir=tmp_path / "cache", max_retries=1)
 
 
-def _stub_questions() -> list[ParsedQuestion]:
+def _stub_extracted() -> list[_ExtractedQuestion]:
     return [
-        ParsedQuestion(
+        _ExtractedQuestion(
             label="Q1",
             text="How often do you use our product?",
             type_hint="radio",
             options=[
-                ParsedOption(code="1", text="Daily"),
-                ParsedOption(code="2", text="Weekly"),
+                _ExtractedOption(code="1", text="Daily"),
+                _ExtractedOption(code="2", text="Weekly"),
             ],
         ),
-        ParsedQuestion(
+        _ExtractedQuestion(
             label="Q2",
             text="Please rate your satisfaction.",
             type_hint="radio",
@@ -150,76 +156,98 @@ def _stub_questions() -> list[ParsedQuestion]:
 
 
 @patch("survey_qa.doc_parser.llm_extractor._get_client")
-def test_extract_questions_calls_llm_on_cache_miss(mock_get_client, tmp_path):
-    from survey_qa.doc_parser.llm_extractor import _ExtractionResult
-
+def test_extract_survey_calls_llm_on_cache_miss(mock_get_client, tmp_path):
     mock_client = MagicMock()
     mock_get_client.return_value = mock_client
     mock_client.chat.completions.create.return_value = _ExtractionResult(
-        questions=_stub_questions()
+        questions=_stub_extracted()
     )
 
     config = _make_config(tmp_path)
-    result = extract_questions(SAMPLE_QUESTIONNAIRE, config)
+    result = extract_survey(SAMPLE_QUESTIONNAIRE, config)
 
-    assert len(result) == 2
-    assert result[0].label == "Q1"
+    assert isinstance(result, SurveyModel)
+    assert len(result.elements) == 2
+    assert result.elements[0].label == "Q1"
     mock_client.chat.completions.create.assert_called_once()
 
 
 @patch("survey_qa.doc_parser.llm_extractor._get_client")
-def test_extract_questions_returns_cached_result(mock_get_client, tmp_path):
+def test_extract_survey_returns_cached_result(mock_get_client, tmp_path):
     """Second call with same text must not hit the LLM."""
-    from survey_qa.doc_parser.llm_extractor import _ExtractionResult
-
     mock_client = MagicMock()
     mock_get_client.return_value = mock_client
     mock_client.chat.completions.create.return_value = _ExtractionResult(
-        questions=_stub_questions()
+        questions=_stub_extracted()
     )
 
     config = _make_config(tmp_path)
-    extract_questions(SAMPLE_QUESTIONNAIRE, config)  # prime the cache
-    extract_questions(SAMPLE_QUESTIONNAIRE, config)  # should be served from cache
+    extract_survey(SAMPLE_QUESTIONNAIRE, config)  # prime the cache
+    extract_survey(SAMPLE_QUESTIONNAIRE, config)  # should be served from cache
 
-    # LLM called only once despite two invocations
     assert mock_client.chat.completions.create.call_count == 1
 
 
 @patch("survey_qa.doc_parser.llm_extractor._get_client")
-def test_extract_questions_cache_miss_on_new_text(mock_get_client, tmp_path):
-    from survey_qa.doc_parser.llm_extractor import _ExtractionResult
-
+def test_extract_survey_cache_miss_on_new_text(mock_get_client, tmp_path):
     mock_client = MagicMock()
     mock_get_client.return_value = mock_client
     mock_client.chat.completions.create.return_value = _ExtractionResult(
-        questions=_stub_questions()
+        questions=_stub_extracted()
     )
 
     config = _make_config(tmp_path)
-    extract_questions("Different text entirely.", config)
-    extract_questions("Another different text.", config)
+    extract_survey("Different text entirely.", config)
+    extract_survey("Another different text.", config)
 
     assert mock_client.chat.completions.create.call_count == 2
+
+
+@patch("survey_qa.doc_parser.llm_extractor._get_client")
+def test_extract_survey_populates_parser_meta(mock_get_client, tmp_path):
+    """Doc parser must populate parser_meta with confidence and source info."""
+    mock_client = MagicMock()
+    mock_get_client.return_value = mock_client
+    mock_client.chat.completions.create.return_value = _ExtractionResult(
+        questions=[
+            _ExtractedQuestion(
+                label="Q1",
+                text="A question",
+                type_hint="radio",
+                confidence=0.85,
+                source_location="A question first",
+                routing_rules=["If Q1=1, skip to Q5"],
+            )
+        ]
+    )
+
+    config = _make_config(tmp_path)
+    result = extract_survey("any text", config)
+
+    q = result.elements[0]
+    assert q.parser_meta is not None
+    assert q.parser_meta.source == "doc"
+    assert q.parser_meta.confidence == 0.85
+    assert q.parser_meta.source_excerpt == "A question first"
+    assert q.parser_meta.raw_display_logic == "If Q1=1, skip to Q5"
 
 
 # ── DocxParser wiring (no real docx file) ────────────────────────────────────
 
 
 @patch("survey_qa.doc_parser.docx_parser.extract_docx")
-@patch("survey_qa.doc_parser.docx_parser.extract_questions")
-def test_docx_parser_wires_extractor_and_llm(mock_extract_q, mock_extract_docx, tmp_path):
+@patch("survey_qa.doc_parser.docx_parser.extract_survey")
+def test_docx_parser_wires_extractor_and_llm(mock_extract_survey, mock_extract_docx, tmp_path):
     from survey_qa.doc_parser.docx_parser import DocxParser
 
     mock_extract_docx.return_value = SAMPLE_QUESTIONNAIRE
-    mock_extract_q.return_value = _stub_questions()
+    mock_extract_survey.return_value = SurveyModel(survey_label="doc", elements=[])
 
     config = _make_config(tmp_path)
     parser = DocxParser(config=config)
     result = parser.parse(Path("fake.docx"))
 
-    assert isinstance(result, QuestionnaireModel)
-    assert len(result.questions) == 2
+    assert isinstance(result, SurveyModel)
     mock_extract_docx.assert_called_once_with(Path("fake.docx"))
 
 
@@ -227,19 +255,18 @@ def test_docx_parser_wires_extractor_and_llm(mock_extract_q, mock_extract_docx, 
 
 
 @patch("survey_qa.doc_parser.pdf_parser.extract_pdf")
-@patch("survey_qa.doc_parser.pdf_parser.extract_questions")
-def test_pdf_parser_wires_extractor_and_llm(mock_extract_q, mock_extract_pdf, tmp_path):
+@patch("survey_qa.doc_parser.pdf_parser.extract_survey")
+def test_pdf_parser_wires_extractor_and_llm(mock_extract_survey, mock_extract_pdf, tmp_path):
     from survey_qa.doc_parser.pdf_parser import PdfParser
 
     mock_extract_pdf.return_value = SAMPLE_QUESTIONNAIRE
-    mock_extract_q.return_value = _stub_questions()
+    mock_extract_survey.return_value = SurveyModel(survey_label="doc", elements=[])
 
     config = _make_config(tmp_path)
     parser = PdfParser(config=config)
     result = parser.parse(Path("fake.pdf"))
 
-    assert isinstance(result, QuestionnaireModel)
-    assert len(result.questions) == 2
+    assert isinstance(result, SurveyModel)
     mock_extract_pdf.assert_called_once_with(Path("fake.pdf"))
 
 

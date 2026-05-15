@@ -8,12 +8,12 @@ Usage:
         id = "XX-001"
         ...
 
-    findings = run_checks(survey_model, questionnaire_model)
+    findings = run_checks(xml_model, doc_model)
 """
 
 from __future__ import annotations
 
-from ..core.models import Finding, QuestionnaireModel, SurveyModel, XmlQuestion
+from ..core.models import Finding, SurveyModel, XmlQuestion
 from .base import Check
 
 _registry: list[type[Check]] = []
@@ -30,11 +30,11 @@ def registered_checks() -> list[type[Check]]:
     return list(_registry)
 
 
-def run_checks(survey: SurveyModel, questionnaire: QuestionnaireModel) -> list[Finding]:
-    """Run all registered checks against every XML question that has a questionnaire match.
+def run_checks(xml: SurveyModel, doc: SurveyModel) -> list[Finding]:
+    """Run all registered checks against every XML question that has a doc-side match.
 
-    Questions in the XML that have no counterpart in the questionnaire are NOT
-    skipped silently — Q-001 will raise an error for them.
+    Questions in the XML that have no counterpart in the doc are NOT skipped
+    silently — Q-001 fires for them.
     """
     # Import side-effect: registers all checks
     from . import (  # noqa: F401
@@ -49,12 +49,17 @@ def run_checks(survey: SurveyModel, questionnaire: QuestionnaireModel) -> list[F
     findings: list[Finding] = []
     check_instances = [cls() for cls in _registry]
 
-    xml_questions: list[XmlQuestion] = survey.questions()
+    xml_questions: list[XmlQuestion] = xml.questions()
+
+    # Build a label → doc-side question map (questions only, not structural elements)
+    doc_questions: dict[str, XmlQuestion] = {
+        e.label: e for e in doc.questions()
+    }
 
     for xml_q in xml_questions:
-        q_q = questionnaire.by_label(xml_q.label)
+        doc_q = doc_questions.get(xml_q.label)
 
-        if q_q is None:
+        if doc_q is None:
             findings.append(
                 Finding(
                     check_id="Q-001",
@@ -67,7 +72,7 @@ def run_checks(survey: SurveyModel, questionnaire: QuestionnaireModel) -> list[F
 
         for check in check_instances:
             try:
-                findings.extend(check.run(xml_q, q_q))
+                findings.extend(check.run(xml_q, doc_q))
             except Exception as exc:
                 findings.append(
                     Finding(

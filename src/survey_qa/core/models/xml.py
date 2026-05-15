@@ -1,6 +1,10 @@
-"""Pydantic models for the Decipher XML side of the pipeline.
+"""Pydantic models for the unified survey representation.
 
-Produced by xml_parser.parse(). No LLM, no I/O.
+Both the XML parser and the doc parser produce instances of these types.
+Fields that the doc parser can't extract from prose are left as None or
+defaults; the optional `parser_meta` field carries parser-side annotations
+(confidence, source excerpt, ambiguity notes) that checks ignore and
+reporters surface.
 """
 
 from __future__ import annotations
@@ -8,6 +12,24 @@ from __future__ import annotations
 from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, Field
+
+
+# ── Parser metadata (doc-side annotations; check-invisible) ──────────────────
+
+
+class ParserMeta(BaseModel):
+    """Parser-side annotations on a model instance.
+
+    The XML parser leaves this as None. The doc parser populates it with
+    extraction confidence, the source text excerpt, and any ambiguity notes.
+    Reporters can surface it; checks ignore it.
+    """
+
+    source: Literal["xml", "doc"] = "xml"
+    confidence: float = 1.0
+    source_excerpt: str | None = None
+    ambiguity_notes: list[str] = Field(default_factory=list)
+    raw_display_logic: str | None = None  # plain English when cond couldn't be translated
 
 
 # ── Row / Col / Choice ────────────────────────────────────────────────────────
@@ -50,7 +72,12 @@ class XmlChoice(BaseModel):
 
 
 class XmlQuestion(BaseModel):
-    """Common fields shared by all respondent-facing question types."""
+    """Common fields shared by all respondent-facing question types.
+
+    Both parsers produce these. Fields the doc parser can't extract from prose
+    are left as `None` or defaults. The optional `parser_meta` field carries
+    parser annotations and is ignored by checks.
+    """
 
     tag: str
     label: str
@@ -67,6 +94,7 @@ class XmlQuestion(BaseModel):
     cols: list[XmlCol] = Field(default_factory=list)
     validate_src: str | None = None
     exec_src: str | None = None
+    parser_meta: ParserMeta | None = None
 
 
 # ── Question subtypes ─────────────────────────────────────────────────────────

@@ -35,3 +35,6 @@ tests/fixtures/survey.xml
 *.swp
 *.swo
 *~
+
+# Claude session-local settings
+.claude/

@@ -1,17 +1,14 @@
-"""core.models — re-exports all model types from their sub-modules.
+"""core.models — re-exports the unified survey model.
 
-Import from here for convenience, or import directly from the sub-module
-when you want to be explicit about which family a model belongs to:
+Both the XML parser and the doc parser produce instances of these types.
 
-    from survey_qa.core.models.xml import XmlRadio, SurveyModel
-    from survey_qa.core.models.doc import ParsedQuestion, QuestionnaireModel
-    from survey_qa.core.models.finding import Finding
+    from survey_qa.core.models import SurveyModel, XmlRadio, ParserMeta, Finding
 """
 
-from .doc import ParsedOption, ParsedQuestion, QuestionnaireModel
 from .finding import Finding
 from .xml import (
     QUESTION_TAGS,
+    ParserMeta,
     SurveyModel,
     XmlCheckbox,
     XmlChoice,
@@ -35,13 +32,8 @@ from .xml import (
 )
 
 __all__ = [
-    # doc
-    "ParsedOption",
-    "ParsedQuestion",
-    "QuestionnaireModel",
-    # finding
     "Finding",
-    # xml
+    "ParserMeta",
     "QUESTION_TAGS",
     "SurveyModel",
     "XmlCheckbox",

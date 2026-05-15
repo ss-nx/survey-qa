@@ -5,14 +5,14 @@ Only applied when the XML question tag is 'checkbox'.
 
 from __future__ import annotations
 
-from ..core.models import Finding, ParsedQuestion, XmlCheckbox, XmlQuestion
+from ..core.models import Finding, XmlCheckbox, XmlQuestion
 from ..core.utils import texts_match
 from . import register_check
 from .base import Check
 
 
-def _is_checkbox(xml_q: XmlQuestion) -> bool:
-    return isinstance(xml_q, XmlCheckbox)
+def _both_checkbox(xml_side: XmlQuestion, doc_side: XmlQuestion) -> bool:
+    return isinstance(xml_side, XmlCheckbox) and isinstance(doc_side, XmlCheckbox)
 
 
 @register_check
@@ -22,16 +22,16 @@ class CB001_RowCount(Check):
     id = "CB-001"
     description = "Checkbox row count matches questionnaire"
 
-    def run(self, xml_q: XmlQuestion, q_q: ParsedQuestion) -> list[Finding]:
-        if not _is_checkbox(xml_q) or not q_q.options:
+    def run(self, xml_side: XmlQuestion, doc_side: XmlQuestion) -> list[Finding]:
+        if not _both_checkbox(xml_side, doc_side) or not doc_side.rows:
             return []
-        xml_count = len(xml_q.rows)
-        q_count = len(q_q.options)
-        if xml_count != q_count:
+        xml_count = len(xml_side.rows)
+        doc_count = len(doc_side.rows)
+        if xml_count != doc_count:
             return [
                 self.error(
-                    xml_q.label,
-                    f"Row count mismatch: XML has {xml_count}, questionnaire has {q_count}",
+                    xml_side.label,
+                    f"Row count mismatch: XML has {xml_count}, questionnaire has {doc_count}",
                 )
             ]
         return []
@@ -44,20 +44,20 @@ class CB002_RowText(Check):
     id = "CB-002"
     description = "Checkbox row text matches questionnaire"
 
-    def run(self, xml_q: XmlQuestion, q_q: ParsedQuestion) -> list[Finding]:
-        if not _is_checkbox(xml_q) or not q_q.options:
+    def run(self, xml_side: XmlQuestion, doc_side: XmlQuestion) -> list[Finding]:
+        if not _both_checkbox(xml_side, doc_side) or not doc_side.rows:
             return []
         findings = []
-        for i, (xml_row, q_opt) in enumerate(zip(xml_q.rows, q_q.options), start=1):
-            if not texts_match(xml_row.text, q_opt.text):
+        for i, (xml_row, doc_row) in enumerate(zip(xml_side.rows, doc_side.rows), start=1):
+            if not texts_match(xml_row.text, doc_row.text):
                 from ..core.utils import fuzzy_match
 
-                score = fuzzy_match(xml_row.text, q_opt.text)
+                score = fuzzy_match(xml_row.text, doc_row.text)
                 findings.append(
                     self.warning(
-                        xml_q.label,
+                        xml_side.label,
                         f"Row {i} ({xml_row.label}) text mismatch (similarity {score:.0f}%)",
-                        detail=f"XML: {xml_row.text!r}\nQuestionnaire: {q_opt.text!r}",
+                        detail=f"XML: {xml_row.text!r}\nQuestionnaire: {doc_row.text!r}",
                     )
                 )
         return findings
@@ -70,17 +70,15 @@ class CB003_Atleast(Check):
     id = "CB-003"
     description = "Checkbox atleast value matches questionnaire"
 
-    def run(self, xml_q: XmlQuestion, q_q: ParsedQuestion) -> list[Finding]:
-        if not isinstance(xml_q, XmlCheckbox):
+    def run(self, xml_side: XmlQuestion, doc_side: XmlQuestion) -> list[Finding]:
+        if not _both_checkbox(xml_side, doc_side):
             return []
-        if q_q.atleast is None:
-            return []
-        if xml_q.atleast != q_q.atleast:
+        if xml_side.atleast != doc_side.atleast:
             return [
                 self.error(
-                    xml_q.label,
-                    f"atleast mismatch: XML has atleast={xml_q.atleast}, "
-                    f"questionnaire expects {q_q.atleast}",
+                    xml_side.label,
+                    f"atleast mismatch: XML has atleast={xml_side.atleast}, "
+                    f"questionnaire expects {doc_side.atleast}",
                 )
             ]
         return []
@@ -93,15 +91,15 @@ class CB004_ExclusiveRow(Check):
     id = "CB-004"
     description = "Exclusive row correctly marked in checkbox"
 
-    def run(self, xml_q: XmlQuestion, q_q: ParsedQuestion) -> list[Finding]:
-        if not _is_checkbox(xml_q) or not q_q.options:
+    def run(self, xml_side: XmlQuestion, doc_side: XmlQuestion) -> list[Finding]:
+        if not _both_checkbox(xml_side, doc_side) or not doc_side.rows:
             return []
-        q_has_exclusive = any(o.is_exclusive for o in q_q.options)
-        xml_has_exclusive = any(r.is_exclusive for r in xml_q.rows)
-        if q_has_exclusive and not xml_has_exclusive:
+        doc_has_exclusive = any(r.is_exclusive for r in doc_side.rows)
+        xml_has_exclusive = any(r.is_exclusive for r in xml_side.rows)
+        if doc_has_exclusive and not xml_has_exclusive:
             return [
                 self.error(
-                    xml_q.label,
+                    xml_side.label,
                     "Questionnaire has an exclusive option but no row has exclusive='1' in XML",
                 )
             ]
@@ -115,15 +113,15 @@ class CB005_OpenRow(Check):
     id = "CB-005"
     description = "Other-specify row marked open in checkbox"
 
-    def run(self, xml_q: XmlQuestion, q_q: ParsedQuestion) -> list[Finding]:
-        if not _is_checkbox(xml_q) or not q_q.options:
+    def run(self, xml_side: XmlQuestion, doc_side: XmlQuestion) -> list[Finding]:
+        if not _both_checkbox(xml_side, doc_side) or not doc_side.rows:
             return []
-        q_has_open = any(o.is_open for o in q_q.options)
-        xml_has_open = any(r.is_open for r in xml_q.rows)
-        if q_has_open and not xml_has_open:
+        doc_has_open = any(r.is_open for r in doc_side.rows)
+        xml_has_open = any(r.is_open for r in xml_side.rows)
+        if doc_has_open and not xml_has_open:
             return [
                 self.error(
-                    xml_q.label,
+                    xml_side.label,
                     "Questionnaire has an 'Other specify' option but no row has open='1' in XML",
                 )
             ]
@@ -137,10 +135,10 @@ class CB006_ExclusiveRowLast(Check):
     id = "CB-006"
     description = "Exclusive row is last in checkbox list"
 
-    def run(self, xml_q: XmlQuestion, q_q: ParsedQuestion) -> list[Finding]:
-        if not _is_checkbox(xml_q):
+    def run(self, xml_side: XmlQuestion, doc_side: XmlQuestion) -> list[Finding]:
+        if not isinstance(xml_side, XmlCheckbox):
             return []
-        rows = xml_q.rows
+        rows = xml_side.rows
         if not rows:
             return []
         exclusive_indices = [i for i, r in enumerate(rows) if r.is_exclusive]
@@ -152,7 +150,7 @@ class CB006_ExclusiveRowLast(Check):
             labels = [rows[i].label for i in non_last]
             return [
                 self.warning(
-                    xml_q.label,
+                    xml_side.label,
                     f"Exclusive row(s) {labels} are not last in the option list",
                 )
             ]

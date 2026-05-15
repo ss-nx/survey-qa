@@ -1,8 +1,8 @@
-"""Label normalizer — align questionnaire labels to XML labels.
+"""Label normalizer — align doc-side labels to XML-side labels.
 
 The questionnaire document may use different question codes than the Decipher
-XML (e.g., the doc says "Q1" but the XML uses "Awareness_Q1").  This module
-attempts to bridge that gap so the check layer can match them up.
+XML (e.g., the doc says "Q1" but the XML uses "Awareness_Q1"). This module
+bridges that gap so the check layer can match elements up by label.
 
 Strategy (applied in order, stops at first match):
   1. Exact match             — Q1 == Q1
@@ -11,15 +11,15 @@ Strategy (applied in order, stops at first match):
   4. Suffix match            — "Awareness_Q1" ends with "Q1"
   5. Fuzzy match (≥ threshold) — rapidfuzz token_sort_ratio
 
-A NormalizationResult is returned for every questionnaire question,
-indicating whether a match was found and how it was resolved.
+A NormalizationResult is returned for every doc-side element, indicating
+whether a match was found and how it was resolved.
 
 Usage
 -----
     from survey_qa.doc_parser.normalizer import normalize_labels
 
-    result = normalize_labels(xml_labels, questionnaire_model)
-    aligned_qm = result.aligned_model   # QuestionnaireModel with labels replaced
+    result = normalize_labels(xml_model, doc_model)
+    aligned_doc = result.aligned_model   # SurveyModel with labels replaced
     for warning in result.warnings:
         print(warning)
 """
@@ -27,11 +27,11 @@ Usage
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from rapidfuzz import fuzz
 
-from ..core.models import ParsedQuestion, QuestionnaireModel
+from ..core.models import SurveyModel, XmlElement
 
 # Minimum fuzzy score to accept a match (0–100)
 _FUZZY_THRESHOLD = 80.0
@@ -42,42 +42,48 @@ _PREFIX_RE = re.compile(r"^(?:question_|q_|que_|item_)", re.IGNORECASE)
 
 @dataclass
 class NormalizationResult:
-    aligned_model: QuestionnaireModel
-    matched: dict[str, str]    # questionnaire_label → xml_label
-    unmatched: list[str]       # questionnaire labels with no XML counterpart
+    aligned_model: SurveyModel
+    matched: dict[str, str]    # doc_label → xml_label
+    unmatched: list[str]       # doc labels with no XML counterpart
     warnings: list[str]        # human-readable notes about fuzzy / suffix matches
 
 
 def normalize_labels(
-    xml_labels: set[str],
-    questionnaire: QuestionnaireModel,
+    xml: SurveyModel,
+    doc: SurveyModel,
     fuzzy_threshold: float = _FUZZY_THRESHOLD,
 ) -> NormalizationResult:
-    """Return a new QuestionnaireModel whose labels are remapped to *xml_labels*.
+    """Return a new doc-side SurveyModel whose labels are remapped to *xml* labels.
 
-    Questions that cannot be matched are kept with their original labels so
+    Elements that cannot be matched are kept with their original labels so
     that Q-001 ("question not found in questionnaire") still fires correctly.
     """
+    xml_labels = xml.labels()
+
     matched: dict[str, str] = {}
     unmatched: list[str] = []
     warnings: list[str] = []
-    new_questions: list[ParsedQuestion] = []
+    new_elements: list[XmlElement] = []
 
-    for q in questionnaire.questions:
-        xml_label = _find_match(q.label, xml_labels, fuzzy_threshold, warnings)
+    for e in doc.elements:
+        original_label = getattr(e, "label", None)
+        if original_label is None:
+            new_elements.append(e)
+            continue
+
+        xml_label = _find_match(original_label, xml_labels, fuzzy_threshold, warnings)
         if xml_label is None:
-            unmatched.append(q.label)
-            new_questions.append(q)
+            unmatched.append(original_label)
+            new_elements.append(e)
         else:
-            matched[q.label] = xml_label
-            if xml_label != q.label:
-                # Replace the label so checks can find it
-                new_questions.append(q.model_copy(update={"label": xml_label}))
+            matched[original_label] = xml_label
+            if xml_label != original_label:
+                new_elements.append(e.model_copy(update={"label": xml_label}))
             else:
-                new_questions.append(q)
+                new_elements.append(e)
 
     return NormalizationResult(
-        aligned_model=QuestionnaireModel(questions=new_questions),
+        aligned_model=SurveyModel(survey_label=doc.survey_label, elements=new_elements),
         matched=matched,
         unmatched=unmatched,
         warnings=warnings,
@@ -101,7 +107,7 @@ def _find_match(
         warnings.append(f"Case-insensitive match: '{q_label}' → '{matched}'")
         return matched
 
-    # 3. Strip common prefix from questionnaire label, try again
+    # 3. Strip common prefix from doc label, try again
     stripped = _PREFIX_RE.sub("", q_label)
     if stripped != q_label:
         if stripped in xml_labels:
@@ -112,7 +118,7 @@ def _find_match(
             warnings.append(f"Prefix-strip + case match: '{q_label}' → '{matched}'")
             return matched
 
-    # 4. Suffix match — XML label ends with questionnaire label (or vice versa)
+    # 4. Suffix match — XML label ends with doc label (or vice versa)
     for xml_label in xml_labels:
         if xml_label.endswith(q_label) or xml_label.lower().endswith(q_label.lower()):
             warnings.append(f"Suffix match: '{q_label}' → '{xml_label}'")

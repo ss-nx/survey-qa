@@ -1,18 +1,20 @@
 """Radio-specific QA checks (RA-001 through RA-006).
 
-Only applied when the XML question tag is 'radio'.
+Only applied when the XML question tag is 'radio'. Both sides arrive as
+`XmlQuestion`; the doc parser produces typed elements as well, so both
+xml_side and doc_side are XmlRadio when this fires.
 """
 
 from __future__ import annotations
 
-from ..core.models import Finding, ParsedQuestion, XmlQuestion, XmlRadio
+from ..core.models import Finding, XmlQuestion, XmlRadio
 from ..core.utils import texts_match
 from . import register_check
 from .base import Check
 
 
-def _is_radio(xml_q: XmlQuestion) -> bool:
-    return isinstance(xml_q, XmlRadio)
+def _both_radio(xml_side: XmlQuestion, doc_side: XmlQuestion) -> bool:
+    return isinstance(xml_side, XmlRadio) and isinstance(doc_side, XmlRadio)
 
 
 @register_check
@@ -22,16 +24,16 @@ class RA001_RowCount(Check):
     id = "RA-001"
     description = "Radio row count matches questionnaire"
 
-    def run(self, xml_q: XmlQuestion, q_q: ParsedQuestion) -> list[Finding]:
-        if not _is_radio(xml_q) or not q_q.options:
+    def run(self, xml_side: XmlQuestion, doc_side: XmlQuestion) -> list[Finding]:
+        if not _both_radio(xml_side, doc_side) or not doc_side.rows:
             return []
-        xml_count = len(xml_q.rows)
-        q_count = len(q_q.options)
-        if xml_count != q_count:
+        xml_count = len(xml_side.rows)
+        doc_count = len(doc_side.rows)
+        if xml_count != doc_count:
             return [
                 self.error(
-                    xml_q.label,
-                    f"Row count mismatch: XML has {xml_count}, questionnaire has {q_count}",
+                    xml_side.label,
+                    f"Row count mismatch: XML has {xml_count}, questionnaire has {doc_count}",
                 )
             ]
         return []
@@ -44,20 +46,20 @@ class RA002_RowText(Check):
     id = "RA-002"
     description = "Radio row text matches questionnaire"
 
-    def run(self, xml_q: XmlQuestion, q_q: ParsedQuestion) -> list[Finding]:
-        if not _is_radio(xml_q) or not q_q.options:
+    def run(self, xml_side: XmlQuestion, doc_side: XmlQuestion) -> list[Finding]:
+        if not _both_radio(xml_side, doc_side) or not doc_side.rows:
             return []
         findings = []
-        for i, (xml_row, q_opt) in enumerate(zip(xml_q.rows, q_q.options), start=1):
-            if not texts_match(xml_row.text, q_opt.text):
+        for i, (xml_row, doc_row) in enumerate(zip(xml_side.rows, doc_side.rows), start=1):
+            if not texts_match(xml_row.text, doc_row.text):
                 from ..core.utils import fuzzy_match
 
-                score = fuzzy_match(xml_row.text, q_opt.text)
+                score = fuzzy_match(xml_row.text, doc_row.text)
                 findings.append(
                     self.warning(
-                        xml_q.label,
+                        xml_side.label,
                         f"Row {i} ({xml_row.label}) text mismatch (similarity {score:.0f}%)",
-                        detail=f"XML: {xml_row.text!r}\nQuestionnaire: {q_opt.text!r}",
+                        detail=f"XML: {xml_row.text!r}\nQuestionnaire: {doc_row.text!r}",
                     )
                 )
         return findings
@@ -70,15 +72,15 @@ class RA003_ExclusiveRow(Check):
     id = "RA-003"
     description = "Exclusive row present when questionnaire expects one"
 
-    def run(self, xml_q: XmlQuestion, q_q: ParsedQuestion) -> list[Finding]:
-        if not _is_radio(xml_q) or not q_q.options:
+    def run(self, xml_side: XmlQuestion, doc_side: XmlQuestion) -> list[Finding]:
+        if not _both_radio(xml_side, doc_side) or not doc_side.rows:
             return []
-        q_has_exclusive = any(o.is_exclusive for o in q_q.options)
-        xml_has_exclusive = any(r.is_exclusive for r in xml_q.rows)
-        if q_has_exclusive and not xml_has_exclusive:
+        doc_has_exclusive = any(r.is_exclusive for r in doc_side.rows)
+        xml_has_exclusive = any(r.is_exclusive for r in xml_side.rows)
+        if doc_has_exclusive and not xml_has_exclusive:
             return [
                 self.error(
-                    xml_q.label,
+                    xml_side.label,
                     "Questionnaire has an exclusive/NA option but no row is marked exclusive='1' in XML",
                 )
             ]
@@ -92,15 +94,15 @@ class RA004_OpenRow(Check):
     id = "RA-004"
     description = "Other-specify row marked open in XML"
 
-    def run(self, xml_q: XmlQuestion, q_q: ParsedQuestion) -> list[Finding]:
-        if not _is_radio(xml_q) or not q_q.options:
+    def run(self, xml_side: XmlQuestion, doc_side: XmlQuestion) -> list[Finding]:
+        if not _both_radio(xml_side, doc_side) or not doc_side.rows:
             return []
-        q_has_open = any(o.is_open for o in q_q.options)
-        xml_has_open = any(r.is_open for r in xml_q.rows)
-        if q_has_open and not xml_has_open:
+        doc_has_open = any(r.is_open for r in doc_side.rows)
+        xml_has_open = any(r.is_open for r in xml_side.rows)
+        if doc_has_open and not xml_has_open:
             return [
                 self.error(
-                    xml_q.label,
+                    xml_side.label,
                     "Questionnaire has an 'Other specify' option but no row has open='1' in XML",
                 )
             ]
@@ -114,20 +116,20 @@ class RA005_ValuesOrder(Check):
     id = "RA-005"
     description = "values='order' attribute consistent with option values"
 
-    def run(self, xml_q: XmlQuestion, q_q: ParsedQuestion) -> list[Finding]:
-        if not isinstance(xml_q, XmlRadio):
+    def run(self, xml_side: XmlQuestion, doc_side: XmlQuestion) -> list[Finding]:
+        if not isinstance(xml_side, XmlRadio):
             return []
-        rows = xml_q.rows
+        rows = xml_side.rows
         if not rows:
             return []
         explicit_values = [r.value for r in rows if r.value is not None]
         sequential = explicit_values == list(range(1, len(explicit_values) + 1))
-        has_values_order = xml_q.values == "order"
+        has_values_order = xml_side.values == "order"
 
         if sequential and not has_values_order and len(explicit_values) == len(rows):
             return [
                 self.warning(
-                    xml_q.label,
+                    xml_side.label,
                     "Options have sequential values 1…N but values='order' is not set",
                     detail="Consider using values='order' for cleaner XML.",
                 )
@@ -142,10 +144,10 @@ class RA006_DuplicateValues(Check):
     id = "RA-006"
     description = "No duplicate row values in radio question"
 
-    def run(self, xml_q: XmlQuestion, q_q: ParsedQuestion) -> list[Finding]:
-        if not _is_radio(xml_q):
+    def run(self, xml_side: XmlQuestion, doc_side: XmlQuestion) -> list[Finding]:
+        if not isinstance(xml_side, XmlRadio):
             return []
-        values = [r.value for r in xml_q.rows if r.value is not None]
+        values = [r.value for r in xml_side.rows if r.value is not None]
         seen: set[int] = set()
         dupes: list[int] = []
         for v in values:
@@ -155,7 +157,7 @@ class RA006_DuplicateValues(Check):
         if dupes:
             return [
                 self.error(
-                    xml_q.label,
+                    xml_side.label,
                     f"Duplicate row value(s) found: {dupes}",
                 )
             ]

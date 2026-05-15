@@ -5,14 +5,14 @@ Only applied when the XML question tag is 'select'.
 
 from __future__ import annotations
 
-from ..core.models import Finding, ParsedQuestion, XmlQuestion, XmlSelect
+from ..core.models import Finding, XmlQuestion, XmlSelect
 from ..core.utils import texts_match
 from . import register_check
 from .base import Check
 
 
-def _is_select(xml_q: XmlQuestion) -> bool:
-    return isinstance(xml_q, XmlSelect)
+def _both_select(xml_side: XmlQuestion, doc_side: XmlQuestion) -> bool:
+    return isinstance(xml_side, XmlSelect) and isinstance(doc_side, XmlSelect)
 
 
 @register_check
@@ -22,16 +22,16 @@ class SE001_ChoiceCount(Check):
     id = "SE-001"
     description = "Select choice count matches questionnaire"
 
-    def run(self, xml_q: XmlQuestion, q_q: ParsedQuestion) -> list[Finding]:
-        if not isinstance(xml_q, XmlSelect) or not q_q.options:
+    def run(self, xml_side: XmlQuestion, doc_side: XmlQuestion) -> list[Finding]:
+        if not _both_select(xml_side, doc_side) or not doc_side.choices:
             return []
-        xml_count = len(xml_q.choices)
-        q_count = len(q_q.options)
-        if xml_count != q_count:
+        xml_count = len(xml_side.choices)
+        doc_count = len(doc_side.choices)
+        if xml_count != doc_count:
             return [
                 self.error(
-                    xml_q.label,
-                    f"Choice count mismatch: XML has {xml_count}, questionnaire has {q_count}",
+                    xml_side.label,
+                    f"Choice count mismatch: XML has {xml_count}, questionnaire has {doc_count}",
                 )
             ]
         return []
@@ -44,20 +44,22 @@ class SE002_ChoiceText(Check):
     id = "SE-002"
     description = "Select choice text matches questionnaire"
 
-    def run(self, xml_q: XmlQuestion, q_q: ParsedQuestion) -> list[Finding]:
-        if not isinstance(xml_q, XmlSelect) or not q_q.options:
+    def run(self, xml_side: XmlQuestion, doc_side: XmlQuestion) -> list[Finding]:
+        if not _both_select(xml_side, doc_side) or not doc_side.choices:
             return []
         findings = []
-        for i, (xml_choice, q_opt) in enumerate(zip(xml_q.choices, q_q.options), start=1):
-            if not texts_match(xml_choice.text, q_opt.text):
+        for i, (xml_choice, doc_choice) in enumerate(
+            zip(xml_side.choices, doc_side.choices), start=1
+        ):
+            if not texts_match(xml_choice.text, doc_choice.text):
                 from ..core.utils import fuzzy_match
 
-                score = fuzzy_match(xml_choice.text, q_opt.text)
+                score = fuzzy_match(xml_choice.text, doc_choice.text)
                 findings.append(
                     self.warning(
-                        xml_q.label,
+                        xml_side.label,
                         f"Choice {i} ({xml_choice.label}) text mismatch (similarity {score:.0f}%)",
-                        detail=f"XML: {xml_choice.text!r}\nQuestionnaire: {q_opt.text!r}",
+                        detail=f"XML: {xml_choice.text!r}\nQuestionnaire: {doc_choice.text!r}",
                     )
                 )
         return findings

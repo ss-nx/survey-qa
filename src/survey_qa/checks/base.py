@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from ..core.models import Finding, ParsedQuestion, XmlQuestion
+from ..core.models import Finding, XmlQuestion
 
 
 class Check(ABC):
@@ -12,18 +12,23 @@ class Check(ABC):
 
     Each subclass implements run() and is automatically registered
     via the @register_check decorator in checks/__init__.py.
+
+    Both sides of the comparison are the same unified `XmlQuestion` type —
+    one was produced by the XML parser, the other by the doc parser. Fields
+    the doc parser couldn't extract are left as None / defaults; checks
+    handle that gracefully.
     """
 
     id: str  # e.g. "Q-001" — must be set on each subclass
     description: str  # human-readable name for reports
 
     @abstractmethod
-    def run(self, xml_q: XmlQuestion, q_q: ParsedQuestion) -> list[Finding]:
-        """Compare one XML question against its questionnaire counterpart.
+    def run(self, xml_side: XmlQuestion, doc_side: XmlQuestion) -> list[Finding]:
+        """Compare one XML question against its doc-side counterpart.
 
         Args:
-            xml_q: The parsed XML question (from SurveyModel).
-            q_q:   The parsed questionnaire question (source of truth).
+            xml_side: The question as produced by the XML parser.
+            doc_side: The question as produced by the doc parser (source of truth).
 
         Returns:
             A (possibly empty) list of Finding objects.

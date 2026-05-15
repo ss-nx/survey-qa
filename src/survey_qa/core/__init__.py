@@ -5,9 +5,7 @@ No business logic. No I/O. Safe to import from any other sub-module.
 
 from .models import (
     Finding,
-    ParsedOption,
-    ParsedQuestion,
-    QuestionnaireModel,
+    ParserMeta,
     SurveyModel,
     XmlCheckbox,
     XmlChoice,
@@ -33,9 +31,7 @@ from .utils import fuzzy_match, strip_html, texts_match
 
 __all__ = [
     "Finding",
-    "ParsedOption",
-    "ParsedQuestion",
-    "QuestionnaireModel",
+    "ParserMeta",
     "SurveyModel",
     "XmlCheckbox",
     "XmlChoice",

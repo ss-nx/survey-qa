@@ -1,35 +1,51 @@
 """LLM-based structured extraction of questionnaire questions.
 
-Stage 2 of the two-stage pipeline. Receives batches of text chunks and
-returns structured ParsedQuestion objects via instructor + litellm.
+Stage 2 of the two-stage pipeline. Receives a document's full text, splits
+it into batches, calls instructor + litellm to extract a loosely-typed
+intermediate representation, then converts that into the unified `SurveyModel`
+populated with `XmlElement` instances (the same types the XML parser produces).
 
 Caching
 -------
-Results are cached on disk (diskcache) keyed by SHA-256 of the full document
-text and the model name. Re-running on the same file costs nothing.
+Results are cached on disk (diskcache) keyed by SHA-256 of:
+  - the full document text
+  - the model name
+  - the SurveyModel JSON schema hash (so model schema changes invalidate the cache)
 
-Cost estimate
--------------
-A 50-question survey (~8 000 tokens) processed with gpt-4o-mini:
-  ~$0.005 total.  A warm cache hit costs $0.
+A warm cache hit costs $0.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
-from pathlib import Path
+from typing import Iterable
 
 import diskcache
 import instructor
 import litellm
 from pydantic import BaseModel, Field
 
-from ..core.models import ParsedOption, ParsedQuestion
+from ..core.models import (
+    ParserMeta,
+    SurveyModel,
+    XmlCheckbox,
+    XmlChoice,
+    XmlElement,
+    XmlFloat,
+    XmlHtml,
+    XmlNumber,
+    XmlRadio,
+    XmlRow,
+    XmlSelect,
+    XmlText,
+)
 from .chunker import TextChunk, batch_chunks, split_into_chunks
 from .config import LLMConfig, load_config
 
 log = logging.getLogger(__name__)
+
 
 # ── Instructor client (lazily initialised) ────────────────────────────────────
 
@@ -43,13 +59,36 @@ def _get_client() -> instructor.Instructor:
     return _client
 
 
-# ── LLM response wrapper ──────────────────────────────────────────────────────
+# ── Internal extraction shape (never leaves this module) ──────────────────────
+
+
+class _ExtractedOption(BaseModel):
+    """LLM's view of an answer option. Converted to XmlRow / XmlChoice."""
+
+    code: str | None = None
+    text: str
+    is_exclusive: bool = False
+    is_open: bool = False
+
+
+class _ExtractedQuestion(BaseModel):
+    """LLM's view of a question. Converted to an XmlElement before returning."""
+
+    label: str
+    text: str
+    type_hint: str = "radio"  # radio | checkbox | text | number | select | html | float
+    options: list[_ExtractedOption] = Field(default_factory=list)
+    routing_rules: list[str] = Field(default_factory=list)
+    optional: bool = False
+    atleast: int | None = None
+    confidence: float = 1.0
+    source_location: str = ""
 
 
 class _ExtractionResult(BaseModel):
     """Wrapper so instructor can return a list of questions reliably."""
 
-    questions: list[ParsedQuestion] = Field(
+    questions: list[_ExtractedQuestion] = Field(
         description="All questions found in this text excerpt, in document order."
     )
 
@@ -66,11 +105,12 @@ Rules
 - label: the question code exactly as it appears in the document (e.g. "Q1", "S2a", "D3").
   If no code is visible, infer a sequential label like "Q1", "Q2", etc.
 - text: the question stem (the wording asked of the respondent). Strip routing notes.
-- type_hint: classify as one of — radio, checkbox, text, number, select, html.
+- type_hint: classify as one of — radio, checkbox, text, number, select, float, html.
     radio     → pick exactly one answer (single-select)
     checkbox  → pick one or more answers (multi-select, "select all that apply")
     text      → open-ended text response
-    number    → numeric input
+    number    → numeric input (integer)
+    float     → decimal numeric input
     select    → dropdown list
     html      → display-only text or instructions (no response collected)
 - options: list the answer choices. For each option:
@@ -94,18 +134,19 @@ def _format_batch(chunks: list[TextChunk]) -> str:
 # ── Public API ────────────────────────────────────────────────────────────────
 
 
-def extract_questions(
+def extract_survey(
     text: str,
     config: LLMConfig | None = None,
-) -> list[ParsedQuestion]:
-    """Extract all questions from *text* using the LLM, with caching.
+) -> SurveyModel:
+    """Extract a SurveyModel from the document text using the LLM, with caching.
 
     Args:
         text:   Full extracted text of the questionnaire document.
         config: LLM config. Uses load_config() if not provided.
 
     Returns:
-        Ordered list of ParsedQuestion objects.
+        SurveyModel containing XmlElement instances (one per extracted question),
+        with parser_meta populated on each.
     """
     if config is None:
         config = load_config()
@@ -119,15 +160,16 @@ def extract_questions(
             return cache[cache_key]  # type: ignore[return-value]
 
         log.info("Cache miss — calling LLM model=%s", config.model)
-        questions = _run_extraction(text, config)
+        extracted = _run_extraction(text, config)
+        survey = _to_survey_model(extracted)
 
-        cache[cache_key] = questions
-        log.info("Cached %d questions (key=%s…)", len(questions), cache_key[:12])
+        cache[cache_key] = survey
+        log.info("Cached %d elements (key=%s…)", len(survey.elements), cache_key[:12])
 
-    return questions
+    return survey
 
 
-def _run_extraction(text: str, config: LLMConfig) -> list[ParsedQuestion]:
+def _run_extraction(text: str, config: LLMConfig) -> list[_ExtractedQuestion]:
     """Split text into batches and call the LLM for each."""
     chunks = split_into_chunks(text)
     batches = batch_chunks(chunks)
@@ -135,7 +177,7 @@ def _run_extraction(text: str, config: LLMConfig) -> list[ParsedQuestion]:
     log.info("Processing %d chunk(s) in %d batch(es)", len(chunks), len(batches))
 
     client = _get_client()
-    all_questions: list[ParsedQuestion] = []
+    all_questions: list[_ExtractedQuestion] = []
 
     for batch_idx, batch in enumerate(batches, start=1):
         log.debug("Batch %d/%d (%d chunks)", batch_idx, len(batches), len(batch))
@@ -153,6 +195,112 @@ def _run_extraction(text: str, config: LLMConfig) -> list[ParsedQuestion]:
     return all_questions
 
 
+# ── Conversion from internal extraction shape → unified XmlElement ────────────
+
+
+def _to_survey_model(extracted: Iterable[_ExtractedQuestion]) -> SurveyModel:
+    """Convert the LLM's loosely-typed extraction to the unified SurveyModel."""
+    elements: list[XmlElement] = []
+    for position, q in enumerate(extracted):
+        elements.append(_to_xml_element(q, position))
+    return SurveyModel(survey_label="doc", elements=elements)
+
+
+def _to_xml_element(q: _ExtractedQuestion, position: int) -> XmlElement:
+    """Map an LLM-extracted question to the matching XmlElement subtype."""
+    meta = _make_meta(q)
+    common = dict(
+        label=q.label,
+        id=f"doc:{q.label}",
+        position=position,
+        title=q.text,
+        title_raw=q.text,
+        optional=q.optional,
+        parser_meta=meta,
+    )
+
+    type_hint = (q.type_hint or "radio").lower()
+
+    if type_hint == "checkbox":
+        return XmlCheckbox(
+            **common,
+            atleast=q.atleast if q.atleast is not None else 1,
+            rows=[_to_xml_row(o, i) for i, o in enumerate(q.options)],
+        )
+    if type_hint == "text":
+        return XmlText(**common)
+    if type_hint == "number":
+        return XmlNumber(**common)
+    if type_hint == "float":
+        return XmlFloat(**common)
+    if type_hint == "select":
+        return XmlSelect(
+            **common,
+            choices=[_to_xml_choice(o, i) for i, o in enumerate(q.options)],
+        )
+    if type_hint == "html":
+        return XmlHtml(**common)
+    # default: radio
+    return XmlRadio(
+        **common,
+        rows=[_to_xml_row(o, i) for i, o in enumerate(q.options)],
+    )
+
+
+def _make_meta(q: _ExtractedQuestion) -> ParserMeta:
+    raw_logic = "; ".join(q.routing_rules) if q.routing_rules else None
+    return ParserMeta(
+        source="doc",
+        confidence=q.confidence,
+        source_excerpt=q.source_location or None,
+        raw_display_logic=raw_logic,
+    )
+
+
+def _to_xml_row(o: _ExtractedOption, index: int) -> XmlRow:
+    label = o.code if o.code else f"r{index + 1}"
+    value = _parse_int(o.code)
+    return XmlRow(
+        label=label,
+        value=value,
+        text=o.text,
+        text_raw=o.text,
+        is_exclusive=o.is_exclusive,
+        is_open=o.is_open,
+        id=f"doc:row:{label}:{index}",
+    )
+
+
+def _to_xml_choice(o: _ExtractedOption, index: int) -> XmlChoice:
+    label = o.code if o.code else f"c{index + 1}"
+    value = _parse_int(o.code)
+    return XmlChoice(
+        label=label,
+        value=value,
+        text=o.text,
+        text_raw=o.text,
+        id=f"doc:choice:{label}:{index}",
+    )
+
+
+def _parse_int(s: str | None) -> int | None:
+    if s is None:
+        return None
+    try:
+        return int(s)
+    except (TypeError, ValueError):
+        return None
+
+
+# ── Cache key (includes schema version) ──────────────────────────────────────
+
+
+def _schema_hash() -> str:
+    """Hash of the SurveyModel JSON schema. Changes invalidate the cache."""
+    schema_json = json.dumps(SurveyModel.model_json_schema(), sort_keys=True)
+    return hashlib.sha256(schema_json.encode()).hexdigest()[:12]
+
+
 def _cache_key(text: str, model: str) -> str:
     digest = hashlib.sha256(text.encode()).hexdigest()
-    return f"qa:doc:{model}:{digest}"
+    return f"qa:doc:{model}:{_schema_hash()}:{digest}"

@@ -1,7 +1,7 @@
 """Routing QA checks (RO-001 through RO-005).
 
 Routing checks operate differently from question-level checks:
-they receive the full SurveyModel and QuestionnaireModel, not a single question pair.
+they receive the full XML and doc SurveyModels, not a single question pair.
 They are invoked separately via run_routing_checks().
 """
 
@@ -9,34 +9,41 @@ from __future__ import annotations
 
 import re
 
-from ..core.models import Finding, QuestionnaireModel, SurveyModel, XmlQuestion, XmlSuspend
+from ..core.models import Finding, SurveyModel, XmlQuestion, XmlSuspend
 
 
 _LABEL_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\b")
 
 
-def run_routing_checks(survey: SurveyModel, questionnaire: QuestionnaireModel) -> list[Finding]:
+def run_routing_checks(xml: SurveyModel, doc: SurveyModel) -> list[Finding]:
     """Run all routing checks and return findings."""
     findings: list[Finding] = []
-    findings.extend(_ro001_term_labels(survey, questionnaire))
-    findings.extend(_ro002_term_cond_labels(survey))
-    findings.extend(_ro003_goto_targets(survey))
-    findings.extend(_ro004_suspend_after_questions(survey))
-    findings.extend(_ro005_cond_has_routing_note(survey, questionnaire))
+    findings.extend(_ro001_term_labels(xml, doc))
+    findings.extend(_ro002_term_cond_labels(xml))
+    findings.extend(_ro003_goto_targets(xml))
+    findings.extend(_ro004_suspend_after_questions(xml))
+    findings.extend(_ro005_cond_has_routing_note(xml, doc))
     return findings
 
 
-def _ro001_term_labels(survey: SurveyModel, questionnaire: QuestionnaireModel) -> list[Finding]:
+def _doc_routing_text(doc: SurveyModel) -> set[str]:
+    """Collect all labels mentioned in any doc-side raw display logic."""
+    labels: set[str] = set()
+    for q in doc.questions():
+        meta = q.parser_meta
+        if meta is None or not meta.raw_display_logic:
+            continue
+        labels.update(_LABEL_RE.findall(meta.raw_display_logic))
+    return labels
+
+
+def _ro001_term_labels(xml: SurveyModel, doc: SurveyModel) -> list[Finding]:
     """RO-001: Every <term> label matches an expected terminate in the questionnaire."""
     findings = []
-    q_routing_labels: set[str] = set()
-    for q in questionnaire.questions:
-        for rule in q.routing_rules:
-            # extract anything that looks like a term label from routing text
-            q_routing_labels.update(_LABEL_RE.findall(rule))
+    doc_routing_labels = _doc_routing_text(doc)
 
-    for term in survey.terms():
-        if q_routing_labels and term.label not in q_routing_labels:
+    for term in xml.terms():
+        if doc_routing_labels and term.label not in doc_routing_labels:
             findings.append(
                 Finding(
                     check_id="RO-001",
@@ -48,12 +55,12 @@ def _ro001_term_labels(survey: SurveyModel, questionnaire: QuestionnaireModel) -
     return findings
 
 
-def _ro002_term_cond_labels(survey: SurveyModel) -> list[Finding]:
+def _ro002_term_cond_labels(xml: SurveyModel) -> list[Finding]:
     """RO-002: <term> condition references question labels that exist in the survey."""
     findings = []
-    known_labels = survey.labels()
+    known_labels = xml.labels()
 
-    for term in survey.terms():
+    for term in xml.terms():
         cond = term.cond
         if not cond:
             continue
@@ -79,11 +86,11 @@ def _ro002_term_cond_labels(survey: SurveyModel) -> list[Finding]:
     return findings
 
 
-def _ro003_goto_targets(survey: SurveyModel) -> list[Finding]:
+def _ro003_goto_targets(xml: SurveyModel) -> list[Finding]:
     """RO-003: <goto> target label exists in the survey."""
     findings = []
-    known_labels = survey.labels()
-    for goto in [e for e in survey.elements if hasattr(e, "target")]:
+    known_labels = xml.labels()
+    for goto in [e for e in xml.elements if hasattr(e, "target")]:
         target = goto.target  # type: ignore[attr-defined]
         if target and target not in known_labels:
             findings.append(
@@ -97,10 +104,10 @@ def _ro003_goto_targets(survey: SurveyModel) -> list[Finding]:
     return findings
 
 
-def _ro004_suspend_after_questions(survey: SurveyModel) -> list[Finding]:
+def _ro004_suspend_after_questions(xml: SurveyModel) -> list[Finding]:
     """RO-004: <suspend> present after each respondent-facing question."""
     findings = []
-    elements = survey.elements
+    elements = xml.elements
     for i, el in enumerate(elements):
         if not isinstance(el, XmlQuestion):
             continue
@@ -118,18 +125,21 @@ def _ro004_suspend_after_questions(survey: SurveyModel) -> list[Finding]:
     return findings
 
 
-def _ro005_cond_has_routing_note(
-    survey: SurveyModel, questionnaire: QuestionnaireModel
-) -> list[Finding]:
+def _ro005_cond_has_routing_note(xml: SurveyModel, doc: SurveyModel) -> list[Finding]:
     """RO-005: Questions with a display cond have a routing note in the questionnaire."""
     findings = []
-    for xml_q in survey.questions():
+    doc_by_label = {q.label: q for q in doc.questions()}
+    for xml_q in xml.questions():
         if not xml_q.cond:
             continue
-        q_q = questionnaire.by_label(xml_q.label)
-        if q_q is None:
+        doc_q = doc_by_label.get(xml_q.label)
+        if doc_q is None:
             continue
-        if not q_q.routing_rules:
+        # Routing note present if doc-side has cond OR raw display logic captured
+        has_note = bool(doc_q.cond) or (
+            doc_q.parser_meta is not None and bool(doc_q.parser_meta.raw_display_logic)
+        )
+        if not has_note:
             findings.append(
                 Finding(
                     check_id="RO-005",

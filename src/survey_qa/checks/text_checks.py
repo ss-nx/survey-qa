@@ -5,14 +5,14 @@ Only applied when the XML question tag is 'text'.
 
 from __future__ import annotations
 
-from ..core.models import Finding, ParsedQuestion, XmlQuestion, XmlText
+from ..core.models import Finding, XmlQuestion, XmlText
 from ..core.utils import texts_match
 from . import register_check
 from .base import Check
 
 
-def _is_text(xml_q: XmlQuestion) -> bool:
-    return isinstance(xml_q, XmlText)
+def _is_text(q: XmlQuestion) -> bool:
+    return isinstance(q, XmlText)
 
 
 @register_check
@@ -22,15 +22,15 @@ class TX001_Optional(Check):
     id = "TX-001"
     description = "Text question optional flag matches questionnaire"
 
-    def run(self, xml_q: XmlQuestion, q_q: ParsedQuestion) -> list[Finding]:
-        if not _is_text(xml_q):
+    def run(self, xml_side: XmlQuestion, doc_side: XmlQuestion) -> list[Finding]:
+        if not _is_text(xml_side):
             return []
-        if xml_q.optional != q_q.optional:
-            expected = "optional" if q_q.optional else "required"
-            actual = "optional" if xml_q.optional else "required"
+        if xml_side.optional != doc_side.optional:
+            expected = "optional" if doc_side.optional else "required"
+            actual = "optional" if xml_side.optional else "required"
             return [
                 self.error(
-                    xml_q.label,
+                    xml_side.label,
                     f"Text question is {actual} in XML but {expected} in questionnaire",
                 )
             ]
@@ -44,31 +44,31 @@ class TX002_GridRowCount(Check):
     id = "TX-002"
     description = "Text grid row count and text matches questionnaire"
 
-    def run(self, xml_q: XmlQuestion, q_q: ParsedQuestion) -> list[Finding]:
-        if not isinstance(xml_q, XmlText) or not xml_q.is_grid:
+    def run(self, xml_side: XmlQuestion, doc_side: XmlQuestion) -> list[Finding]:
+        if not isinstance(xml_side, XmlText) or not xml_side.is_grid:
             return []
-        if not q_q.options:
+        if not getattr(doc_side, "rows", None):
             return []
         findings = []
-        xml_count = len(xml_q.rows)
-        q_count = len(q_q.options)
-        if xml_count != q_count:
+        xml_count = len(xml_side.rows)
+        doc_count = len(doc_side.rows)
+        if xml_count != doc_count:
             findings.append(
                 self.error(
-                    xml_q.label,
-                    f"Grid row count mismatch: XML has {xml_count}, questionnaire has {q_count}",
+                    xml_side.label,
+                    f"Grid row count mismatch: XML has {xml_count}, questionnaire has {doc_count}",
                 )
             )
-        for i, (xml_row, q_opt) in enumerate(zip(xml_q.rows, q_q.options), start=1):
-            if not texts_match(xml_row.text, q_opt.text):
+        for i, (xml_row, doc_row) in enumerate(zip(xml_side.rows, doc_side.rows), start=1):
+            if not texts_match(xml_row.text, doc_row.text):
                 from ..core.utils import fuzzy_match
 
-                score = fuzzy_match(xml_row.text, q_opt.text)
+                score = fuzzy_match(xml_row.text, doc_row.text)
                 findings.append(
                     self.error(
-                        xml_q.label,
+                        xml_side.label,
                         f"Grid row {i} ({xml_row.label}) text mismatch (similarity {score:.0f}%)",
-                        detail=f"XML: {xml_row.text!r}\nQuestionnaire: {q_opt.text!r}",
+                        detail=f"XML: {xml_row.text!r}\nQuestionnaire: {doc_row.text!r}",
                     )
                 )
         return findings
@@ -81,10 +81,10 @@ class TX003_GridColCount(Check):
     id = "TX-003"
     description = "Text grid column count matches questionnaire"
 
-    def run(self, xml_q: XmlQuestion, q_q: ParsedQuestion) -> list[Finding]:
-        if not isinstance(xml_q, XmlText) or not xml_q.is_grid:
+    def run(self, xml_side: XmlQuestion, doc_side: XmlQuestion) -> list[Finding]:
+        if not isinstance(xml_side, XmlText) or not xml_side.is_grid:
             return []
-        xml_col_count = len(xml_q.cols)
+        xml_col_count = len(xml_side.cols)
         if xml_col_count == 0:
             return []
         return []

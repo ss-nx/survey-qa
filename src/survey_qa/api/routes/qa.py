@@ -76,9 +76,9 @@ async def compare_endpoint(
         survey = parse_xml(xml_path)
 
         parser = QuestionnaireParser.for_file(q_path)
-        qm = parser.parse(q_path)
-        qm = normalize_labels(survey.labels(), qm).aligned_model
-        findings = run_checks(survey, qm) + run_routing_checks(survey, qm)
+        doc = parser.parse(q_path)
+        doc = normalize_labels(survey, doc).aligned_model
+        findings = run_checks(survey, doc) + run_routing_checks(survey, doc)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     finally:

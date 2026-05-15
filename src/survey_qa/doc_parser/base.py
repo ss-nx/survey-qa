@@ -5,14 +5,18 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-from ..core.models import QuestionnaireModel
+from ..core.models import SurveyModel
 
 
 class QuestionnaireParser(ABC):
-    """Parse a client questionnaire document into a QuestionnaireModel."""
+    """Parse a client questionnaire document into a SurveyModel.
+
+    Returns the same unified `SurveyModel` that the XML parser produces,
+    so the check layer compares like-typed elements on both sides.
+    """
 
     @abstractmethod
-    def parse(self, path: Path) -> QuestionnaireModel: ...
+    def parse(self, path: Path) -> SurveyModel: ...
 
     @classmethod
     def for_file(cls, path: Path) -> "QuestionnaireParser":

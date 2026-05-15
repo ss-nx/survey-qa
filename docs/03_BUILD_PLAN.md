@@ -16,13 +16,13 @@
 **Goal**: Parse the Decipher XML into the canonical model and run a first set of checks.
 
 **Deliverables**:
-- `survey_qa/core/models.py` — Pydantic models: `XmlElement` discriminated union, `ParsedQuestion`, `Finding`, `Severity`
+- `survey_qa/core/models/` — Pydantic model package: `xml.py` (`XmlElement` discriminated union with `_meta` field), `finding.py` (`Finding`, `Severity`), `__init__.py` re-exports
 - `survey_qa/xml_parser/__init__.py` — `lxml`-based parser → `SurveyModel`
 - `survey_qa/checks/__init__.py` — `@register_check` decorator + `run_checks()` runner
-- `survey_qa/checks/universal.py` — Q-checks (title match, type match, optional match)
-- `survey_qa/checks/radio.py` — RA-checks (row count, row text, exclusive, open, values, duplicates)
-- `survey_qa/reporters/console.py` — `rich` terminal output
-- `survey_qa/api/cli.py` — `typer` CLI entry point
+- `survey_qa/checks/base.py` — abstract `Check` base class
+- `survey_qa/checks/question_checks.py` — Q-checks (title match, type match, optional match)
+- `survey_qa/checks/radio_checks.py` — RA-checks (row count, row text, exclusive, open, values, duplicates)
+- `survey_qa/api/cli.py` — `typer` CLI entry point with `rich` terminal output
 
 **Checks in Phase 1**:
 
@@ -84,10 +84,10 @@
 **Goal**: Full check coverage across all question types and routing logic.
 
 **Deliverables**:
-- `survey_qa/checks/checkbox.py` — CB-checks (mirrors RA-checks for multi-select)
-- `survey_qa/checks/text.py` — TX-checks (optional flag, grid row count)
-- `survey_qa/checks/select.py` — SE-checks (choice count, choice text)
-- `survey_qa/checks/routing.py` — RO-checks (term labels, conditions, goto targets, suspend placement, routing notes)
+- `survey_qa/checks/checkbox_checks.py` — CB-checks (mirrors RA-checks for multi-select)
+- `survey_qa/checks/text_checks.py` — TX-checks (optional flag, grid row count)
+- `survey_qa/checks/select_checks.py` — SE-checks (choice count, choice text)
+- `survey_qa/checks/routing_checks.py` — RO-checks (term labels, conditions, goto targets, suspend placement, routing notes)
 
 **Checks added**:
 
@@ -111,7 +111,7 @@
 **Goal**: Compare `cond=` expressions in the XML against the doc-side `cond=` (translated from plain English by the doc parser, using the Decipher function library reference).
 
 **Deliverables**:
-- `survey_qa/checks/conditions.py` — condition comparison checks
+- `survey_qa/checks/condition_checks.py` — condition comparison checks
 - `survey_qa/checks/condition_ast.py` — Decipher expression parser → AST for equivalence comparison
 
 **Key design**:
@@ -233,29 +233,32 @@ Claude: "Found 4 issues. 2 errors: Q7 has a type mismatch (doc says radio, XML h
 ```
 survey_qa/
 ├── core/
-│   ├── models.py              # Pydantic models: XmlElement union, ParsedQuestion, Finding
+│   ├── models/
+│   │   ├── __init__.py        # re-exports
+│   │   ├── xml.py             # XmlElement union + ParserMeta + per-type models
+│   │   └── finding.py         # Finding, Severity
 │   └── utils.py               # strip_html(), fuzzy match helpers
 ├── xml_parser/
 │   └── __init__.py            # lxml parser → SurveyModel (deterministic, no LLM)
 ├── doc_parser/
 │   ├── extractor.py           # docx/pdf → plain text (zero cost)
 │   ├── chunker.py             # text → question-candidate batches
-│   ├── llm_extractor.py       # instructor + litellm + diskcache → QuestionnaireModel
+│   ├── llm_extractor.py       # instructor + litellm + diskcache → SurveyModel (unified)
 │   └── normalizer.py          # label alignment (fuzzy matching)
 ├── checks/
 │   ├── __init__.py            # @register_check decorator + run_checks()
-│   ├── universal.py           # Q-checks (title, type, optional)
-│   ├── radio.py               # RA-checks
-│   ├── checkbox.py            # CB-checks
-│   ├── text.py                # TX-checks
-│   ├── select.py              # SE-checks
-│   ├── routing.py             # RO-checks
-│   └── conditions.py          # Phase 4: display condition checks
+│   ├── base.py                # abstract Check class
+│   ├── question_checks.py     # Q-checks (title, type, optional)
+│   ├── radio_checks.py        # RA-checks
+│   ├── checkbox_checks.py     # CB-checks
+│   ├── text_checks.py         # TX-checks
+│   ├── select_checks.py       # SE-checks
+│   ├── routing_checks.py      # RO-checks
+│   └── condition_checks.py    # Phase 4: display condition checks
 ├── reporters/
-│   ├── excel.py               # openpyxl: Summary + Findings + Questions sheets
-│   └── console.py             # rich terminal tables
+│   └── excel.py               # openpyxl: Summary + Findings + Questions sheets
 ├── api/
-│   ├── cli.py                 # typer CLI
+│   ├── cli.py                 # typer CLI (rich console output)
 │   ├── main.py                # FastAPI app
 │   └── routes/
 │       └── qa.py              # POST /qa/xml, POST /qa/compare

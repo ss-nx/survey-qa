@@ -1,4 +1,4 @@
-"""Questionnaire document parser — docx, pdf → QuestionnaireModel (LLM-assisted).
+"""Questionnaire document parser — docx, pdf → SurveyModel (LLM-assisted).
 
 Two-stage pipeline
 ------------------

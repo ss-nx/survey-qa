@@ -37,19 +37,19 @@ def check(
         from ..doc_parser import QuestionnaireParser
 
         parser = QuestionnaireParser.for_file(questionnaire)
-        qm = parser.parse(questionnaire)
-        console.print(f"  [green]✓[/green] Parsed {len(qm.questions)} questions")
+        doc = parser.parse(questionnaire)
+        console.print(f"  [green]✓[/green] Parsed {len(doc.questions())} questions")
 
         from ..doc_parser.normalizer import normalize_labels
         from ..checks import run_checks
         from ..checks.routing_checks import run_routing_checks
 
-        norm = normalize_labels(survey.labels(), qm)
+        norm = normalize_labels(survey, doc)
         for w in norm.warnings:
             console.print(f"  [dim]label:[/dim] {w}")
-        qm = norm.aligned_model
+        doc = norm.aligned_model
 
-        findings = run_checks(survey, qm) + run_routing_checks(survey, qm)
+        findings = run_checks(survey, doc) + run_routing_checks(survey, doc)
 
         errors = [f for f in findings if f.severity == "error"]
         warnings = [f for f in findings if f.severity == "warning"]
