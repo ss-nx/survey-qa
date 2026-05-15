@@ -1,0 +1,55 @@
+{
+  "manifest_version": "0.4",
+  "name": "survey-qa",
+  "display_name": "Survey QA",
+  "version": "0.1.0",
+  "description": "Compare a Forsta Decipher XML survey against a client questionnaire (Word/PDF) and surface QA findings.",
+  "author": {
+    "name": "ss-nx"
+  },
+  "homepage": "https://github.com/ss-nx/survey-qa",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ss-nx/survey-qa"
+  },
+  "license": "MIT",
+  "server": {
+    "type": "uv",
+    "entry_point": "src/survey_qa/mcp/server.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "${__dirname}",
+        "survey-qa-mcp"
+      ]
+    }
+  },
+  "tools": [
+    {
+      "name": "get_survey_model_schema",
+      "description": "Return the JSON Schema for SurveyModel — use when constructing doc-side data for run_checks."
+    },
+    {
+      "name": "parse_xml",
+      "description": "Parse a Decipher XML survey file into the unified SurveyModel (deterministic, no LLM)."
+    },
+    {
+      "name": "run_checks",
+      "description": "Compare an XML survey against a doc-side SurveyModel and return findings + summary."
+    },
+    {
+      "name": "list_checks",
+      "description": "List all registered QA checks with their IDs and descriptions."
+    },
+    {
+      "name": "generate_report",
+      "description": "Write a color-coded Excel QA report (Summary / Findings / Questions sheets)."
+    }
+  ],
+  "compatibility": {
+    "platforms": ["darwin", "linux", "win32"],
+    "claude_desktop": ">=0.10.0"
+  }
+}

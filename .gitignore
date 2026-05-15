@@ -38,3 +38,6 @@ tests/fixtures/survey.xml
 
 # Claude session-local settings
 .claude/
+
+# Build artifacts
+dist/

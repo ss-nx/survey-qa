@@ -11,8 +11,6 @@ A Python tool that compares a **Forsta Decipher XML survey script** against a **
 > - [`06_RADIO_ELEMENT_REFERENCE.md`](docs/06_RADIO_ELEMENT_REFERENCE.md) — full radio element attributes
 > - `07_DECIPHER_FUNCTION_LIBRARY.md` — Decipher function library (`ans`, `flt`, `label`, etc.) used by the doc parser to translate plain-English logic into `cond` expressions
 >
-> The plan docs reflect the **target architecture**, including the in-progress refactor to a single unified `SurveyModel` produced by both parsers (no more separate `QuestionnaireModel` / `ParsedQuestion`). The code below currently uses the older two-model pattern — see the plan docs for the direction.
-
 ## What it does
 
 1. Parses the Decipher XML into typed models — questions, rows, routing, structural elements.
@@ -20,6 +18,16 @@ A Python tool that compares a **Forsta Decipher XML survey script** against a **
 3. Aligns labels between the two sources using a five-pass fuzzy matching strategy (exact → case-insensitive → prefix strip → suffix → fuzzy).
 4. Runs 26 QA checks across question types and routing logic.
 5. Reports findings as a rich CLI table and/or an Excel report.
+
+## Three ways to use it
+
+| Mode | Best for | Needs API key |
+|---|---|---|
+| **Claude Desktop (MCPB)** | Day-to-day team use — drag the `.mcpb` file into Claude Desktop | No (Claude does the doc parsing) |
+| **CLI** | Batch runs, CI/CD, scripting | Yes (OpenAI / Anthropic / Gemini / Ollama) |
+| **FastAPI** | Programmatic integration | Yes |
+
+See [Install for Claude Desktop](#install-for-claude-desktop-mcpb) below for the team-distribution path.
 
 ---
 
@@ -73,6 +81,50 @@ LITELLM_MODEL=ollama/llama3
 ```
 
 Parsed questionnaire results are cached on disk. Re-running on the same file costs $0.
+
+---
+
+## Install for Claude Desktop (MCPB)
+
+The simplest way to use this tool — and the path for sharing with your team — is to install it as a Claude Desktop Extension. No terminal, no API key required (Claude does the doc parsing natively from the conversation).
+
+### Build the `.mcpb` file (maintainer)
+
+```bash
+scripts/build_mcpb.sh
+# Output: dist/survey-qa.mcpb (~44 KB)
+```
+
+### Install (each team member)
+
+1. Send them the `dist/survey-qa.mcpb` file (Slack, shared drive, GitHub release).
+2. They open Claude Desktop, drag the `.mcpb` onto the window, click "Install."
+3. Done. Five tools become available in their Claude Desktop:
+   - `parse_xml`, `run_checks`, `list_checks`, `generate_report`, `get_survey_model_schema`
+
+### Usage in Claude Desktop
+
+In any conversation, attach the questionnaire (.docx/.pdf) and the survey XML, then ask:
+
+> "Use survey-qa to compare survey.xml against this questionnaire and tell me what's broken."
+
+Claude reads the questionnaire, calls `parse_xml`, builds a doc-side `SurveyModel`, calls `run_checks`, and explains the findings — optionally writing an Excel report via `generate_report`.
+
+### Manual registration (alternative to MCPB)
+
+If you'd rather skip the MCPB packaging and register the MCP server directly from source, add this to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "survey-qa": {
+      "command": "/absolute/path/to/.venv/bin/survey-qa-mcp"
+    }
+  }
+}
+```
+
+Restart Claude Desktop. Same five tools become available.
 
 ---
 
