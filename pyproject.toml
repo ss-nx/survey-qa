@@ -23,12 +23,16 @@ dependencies = [
 
 [project.scripts]
 survey-qa = "survey_qa.api.cli:app"
+survey-qa-mcp = "survey_qa.mcp.server:main"
 
 [project.optional-dependencies]
 api = [
     "fastapi>=0.115",
     "uvicorn>=0.32",
     "python-multipart>=0.0.12",
+]
+mcp = [
+    "mcp>=1.0",
 ]
 dev = [
     "pytest>=8.3",
