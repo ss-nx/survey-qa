@@ -120,3 +120,88 @@ def test_mixed_strategies():
     assert "Awareness_Q1" in labels  # suffix
     assert "Q3" in labels          # exact
     assert result.unmatched == []
+
+
+# ── Title-similarity match ────────────────────────────────────────────────────
+
+
+def _q(tag: str, label: str, title: str, position: int = 0):
+    """Build a single question by tag — supports radio/checkbox."""
+    from survey_qa.core.models import XmlCheckbox
+    cls = {"radio": XmlRadio, "checkbox": XmlCheckbox}[tag]
+    return cls(
+        label=label,
+        id=f"x:{label}",
+        position=position,
+        title=title,
+        title_raw=title,
+        rows=[],
+    )
+
+
+def _model(*questions) -> SurveyModel:
+    return SurveyModel(survey_label="x", elements=list(questions))
+
+
+def test_title_similarity_matches_synthetic_doc_label():
+    xml = _model(_q("radio", "screen_country", "Where do you live?", 0))
+    doc = _model(_q("radio", "doc:q1", "Where do you live?", 0))
+    result = normalize_labels(xml, doc)
+    assert result.matched.get("doc:q1") == "screen_country"
+    assert any("Title-similarity" in w for w in result.warnings)
+
+
+def test_title_similarity_respects_tag_equality():
+    # Same title but different tag — should NOT match
+    xml = _model(_q("checkbox", "Q1_check", "What is your favorite color?", 0))
+    doc = _model(_q("radio", "doc:q1", "What is your favorite color?", 0))
+    result = normalize_labels(xml, doc, fuzzy_threshold=99.0)
+    assert "doc:q1" in result.unmatched
+
+
+def test_title_similarity_below_threshold_no_match():
+    xml = _model(_q("radio", "Q1", "What is your favorite ice cream flavor?", 0))
+    doc = _model(_q("radio", "doc:q1", "Where do you work?", 0))
+    result = normalize_labels(xml, doc, fuzzy_threshold=99.0)
+    assert "doc:q1" in result.unmatched
+
+
+def test_title_similarity_does_not_reuse_matched_xml():
+    # Two doc questions with very similar titles, one XML question available.
+    # First wins; second is left unmatched.
+    xml = _model(_q("radio", "X1", "How old are you?", 0))
+    doc = _model(
+        _q("radio", "doc:q1", "How old are you?", 0),
+        _q("radio", "doc:q2", "How old are you?", 1),
+    )
+    result = normalize_labels(xml, doc, fuzzy_threshold=99.0)
+    assert result.matched.get("doc:q1") == "X1"
+    assert "doc:q2" in result.unmatched
+
+
+def test_title_similarity_tiebreaker_prefers_earlier_xml():
+    # Two XML candidates with same exact title; doc should pick the first.
+    xml = _model(
+        _q("radio", "X_first", "Pick a color", 0),
+        _q("radio", "X_second", "Pick a color", 1),
+    )
+    doc = _model(_q("radio", "doc:q1", "Pick a color", 0))
+    result = normalize_labels(xml, doc, fuzzy_threshold=99.0)
+    assert result.matched.get("doc:q1") == "X_first"
+
+
+def test_title_similarity_only_runs_when_label_strategies_fail():
+    # An exact label match should win, not title similarity, even if titles
+    # are misleading.
+    xml = _model(_q("radio", "Q1", "Title A", 0))
+    doc = _model(_q("radio", "Q1", "Title A", 0))
+    result = normalize_labels(xml, doc)
+    assert result.matched["Q1"] == "Q1"
+    assert not any("Title-similarity" in w for w in result.warnings)
+
+
+def test_title_similarity_skips_empty_titles():
+    xml = _model(_q("radio", "X1", "", 0))
+    doc = _model(_q("radio", "doc:q1", "Some real title", 0))
+    result = normalize_labels(xml, doc, fuzzy_threshold=99.0)
+    assert "doc:q1" in result.unmatched

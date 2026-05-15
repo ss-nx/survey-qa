@@ -9,7 +9,11 @@ Strategy (applied in order, stops at first match):
   2. Case-insensitive match  — q1 == Q1
   3. Strip common prefixes   — "question_Q1" → "Q1"
   4. Suffix match            — "Awareness_Q1" ends with "Q1"
-  5. Fuzzy match (≥ threshold) — rapidfuzz token_sort_ratio
+  5. Fuzzy label match (≥ threshold) — rapidfuzz token_sort_ratio
+  6. Title-similarity match  — applies when doc-side labels are synthetic
+                                (e.g., 'doc:q1' from the compact parser).
+                                Compares question titles, requires same tag,
+                                won't reuse an XML question already matched.
 
 A NormalizationResult is returned for every doc-side element, indicating
 whether a match was found and how it was resolved.
@@ -31,13 +35,25 @@ from dataclasses import dataclass
 
 from rapidfuzz import fuzz
 
-from ..core.models import SurveyModel, XmlElement
+from ..core.models import SurveyModel, XmlElement, XmlQuestion
 
-# Minimum fuzzy score to accept a match (0–100)
+# Minimum fuzzy score to accept a label match (0–100)
 _FUZZY_THRESHOLD = 80.0
+
+# Minimum title-similarity score to accept a title-based match (0–100)
+_TITLE_THRESHOLD = 80.0
+
+# Tolerance band for title-score ties — within this many points of the best
+# match, prefer the XML question earliest in document order.
+_TITLE_TIE_MARGIN = 5.0
 
 # Prefixes that are often stripped in questionnaire labels
 _PREFIX_RE = re.compile(r"^(?:question_|q_|que_|item_)", re.IGNORECASE)
+
+# Synthetic-label sentinel used by the compact parser (doc-side). Labels with
+# this prefix are placeholders and should bind via title similarity, not by
+# coincidental suffix/fuzzy overlap with XML codes.
+_SYNTHETIC_LABEL_PREFIX = "doc:"
 
 
 @dataclass
@@ -52,6 +68,8 @@ def normalize_labels(
     xml: SurveyModel,
     doc: SurveyModel,
     fuzzy_threshold: float = _FUZZY_THRESHOLD,
+    title_threshold: float = _TITLE_THRESHOLD,
+    title_tie_margin: float = _TITLE_TIE_MARGIN,
 ) -> NormalizationResult:
     """Return a new doc-side SurveyModel whose labels are remapped to *xml* labels.
 
@@ -59,11 +77,13 @@ def normalize_labels(
     that Q-001 ("question not found in questionnaire") still fires correctly.
     """
     xml_labels = xml.labels()
+    xml_questions_by_label: dict[str, XmlQuestion] = {q.label: q for q in xml.questions()}
 
     matched: dict[str, str] = {}
     unmatched: list[str] = []
     warnings: list[str] = []
     new_elements: list[XmlElement] = []
+    matched_xml_labels: set[str] = set()
 
     for e in doc.elements:
         original_label = getattr(e, "label", None)
@@ -71,12 +91,27 @@ def normalize_labels(
             new_elements.append(e)
             continue
 
-        xml_label = _find_match(original_label, xml_labels, fuzzy_threshold, warnings)
+        if original_label.startswith(_SYNTHETIC_LABEL_PREFIX):
+            xml_label = None  # synthetic; skip label strategies, go to title
+        else:
+            xml_label = _find_match(original_label, xml_labels, fuzzy_threshold, warnings)
+
+        if xml_label is None and isinstance(e, XmlQuestion) and e.title:
+            xml_label = _find_title_match(
+                e,
+                xml_questions_by_label,
+                matched_xml_labels,
+                title_threshold,
+                title_tie_margin,
+                warnings,
+            )
+
         if xml_label is None:
             unmatched.append(original_label)
             new_elements.append(e)
         else:
             matched[original_label] = xml_label
+            matched_xml_labels.add(xml_label)
             if xml_label != original_label:
                 new_elements.append(e.model_copy(update={"label": xml_label}))
             else:
@@ -143,3 +178,52 @@ def _find_match(
         return best_label
 
     return None
+
+
+def _find_title_match(
+    doc_q: XmlQuestion,
+    xml_questions_by_label: dict[str, XmlQuestion],
+    matched_xml_labels: set[str],
+    threshold: float,
+    tie_margin: float,
+    warnings: list[str],
+) -> str | None:
+    """Match a doc-side question to an XML question by title similarity.
+
+    Constraints:
+      - same `tag` (radio ↔ radio, etc.)
+      - similarity score ≥ `threshold`
+      - XML question not already matched to an earlier doc-side question
+      - on ties within `tie_margin` points, prefer the XML question earliest
+        in document order
+    """
+    doc_title = doc_q.title.strip().lower()
+    if not doc_title:
+        return None
+
+    candidates: list[tuple[float, int, str]] = []  # (score, xml_position, xml_label)
+    for xml_label, xml_q in xml_questions_by_label.items():
+        if xml_label in matched_xml_labels:
+            continue
+        if xml_q.tag != doc_q.tag:
+            continue
+        xml_title = (xml_q.title or "").strip().lower()
+        if not xml_title:
+            continue
+        score = fuzz.token_sort_ratio(doc_title, xml_title)
+        if score >= threshold:
+            candidates.append((score, xml_q.position, xml_label))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda t: (-t[0], t[1]))
+    best_score = candidates[0][0]
+    ties = [c for c in candidates if best_score - c[0] <= tie_margin]
+    chosen = min(ties, key=lambda t: t[1])  # earliest doc-order
+
+    warnings.append(
+        f"Title-similarity match ({chosen[0]:.0f}%): "
+        f"{doc_q.title!r} → XML label {chosen[2]!r}"
+    )
+    return chosen[2]

@@ -3,13 +3,13 @@
 A Python tool that compares a **Forsta Decipher XML survey script** against a **client questionnaire document** (Word or PDF) and produces a structured QA report. The questionnaire is always the source of truth.
 
 > **Design docs:** the canonical project plan, architecture, and conventions live in [`docs/`](docs/):
-> - [`01_PROJECT_OVERVIEW.md`](docs/01_PROJECT_OVERVIEW.md) — what this is and who it's for
-> - [`02_ARCHITECTURE.md`](docs/02_ARCHITECTURE.md) — architecture diagram, design decisions, canonical model
-> - [`03_BUILD_PLAN.md`](docs/03_BUILD_PLAN.md) — phase-by-phase roadmap (Phase 1–3 done; Phase 4 conditions, Phase 5 MCP server, Phase 6 GitHub check management, Phase 7 Streamlit UI)
+> - [`03_BUILD_PLAN.md`](docs/03_BUILD_PLAN.md) — current state, in-flight work, backlog
 > - [`04_DECIPHER_XML_REFERENCE.md`](docs/04_DECIPHER_XML_REFERENCE.md) — XML element reference
 > - [`05_CODING_CONVENTIONS.md`](docs/05_CODING_CONVENTIONS.md) — how to add checks, models, and question types
 > - [`06_RADIO_ELEMENT_REFERENCE.md`](docs/06_RADIO_ELEMENT_REFERENCE.md) — full radio element attributes
-> - `07_DECIPHER_FUNCTION_LIBRARY.md` — Decipher function library (`ans`, `flt`, `label`, etc.) used by the doc parser to translate plain-English logic into `cond` expressions
+> - [`08_COMPACT_FORMAT.md`](docs/08_COMPACT_FORMAT.md) — doc-side compact format spec (in-progress redesign of the doc parser; under review)
+> - `07_DECIPHER_FUNCTION_LIBRARY.md` — Decipher function library (`ans`, `flt`, `label`, etc.); to be added
+> - [`STALE_01_PROJECT_OVERVIEW.md`](docs/STALE_01_PROJECT_OVERVIEW.md), [`STALE_02_ARCHITECTURE.md`](docs/STALE_02_ARCHITECTURE.md) — pending refresh; mostly accurate but don't yet reflect the Skill surface or the compact-format redesign
 >
 ## What it does
 
@@ -19,15 +19,18 @@ A Python tool that compares a **Forsta Decipher XML survey script** against a **
 4. Runs 26 QA checks across question types and routing logic.
 5. Reports findings as a rich CLI table and/or an Excel report.
 
-## Three ways to use it
+## Four ways to use it
 
 | Mode | Best for | Needs API key |
 |---|---|---|
-| **Claude Desktop (MCPB)** | Day-to-day team use — drag the `.mcpb` file into Claude Desktop | No (Claude does the doc parsing) |
+| **Skill (claude.ai / Desktop / Code)** | Primary team-distribution path — works across all Claude surfaces, no per-user setup | No (Claude does the doc parsing in its sandbox) |
+| **MCPB (Claude Desktop)** | Drag-and-drop install for Claude Desktop users specifically | Yes (server-side, for the instructor doc parser) |
 | **CLI** | Batch runs, CI/CD, scripting | Yes (OpenAI / Anthropic / Gemini / Ollama) |
 | **FastAPI** | Programmatic integration | Yes |
 
-See [Install for Claude Desktop](#install-for-claude-desktop-mcpb) below for the team-distribution path.
+The Skill bundles the same Python library as the other surfaces, but the doc parsing happens in Claude's reasoning + a deterministic compact-text parser (in progress — see [`docs/08_COMPACT_FORMAT.md`](docs/08_COMPACT_FORMAT.md)) instead of via instructor + litellm. That's why the Skill doesn't need an API key.
+
+See [Install for Claude Desktop](#install-for-claude-desktop-mcpb) below for the MCPB path. See `dist/survey-qa-skill.zip` (built via `scripts/build_skill.sh`) for the Skill bundle to upload.
 
 ---
 
