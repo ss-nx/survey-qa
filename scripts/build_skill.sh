@@ -42,8 +42,12 @@ cp -r skills/survey-qa/scripts "$BUILD/"
 # Copy survey_qa package source (the bundled library)
 cp -r src/survey_qa "$BUILD/"
 
-# Strip caches
+# Strip caches and any leftover runtime self-install dir.
+# The Skill's _bootstrap.py creates vendor/ at first invocation in the
+# target sandbox — we don't ship it from the build machine because native
+# wheels (lxml, pydantic-core, rapidfuzz) are platform/ABI-specific.
 find "$BUILD" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
+find "$BUILD" -type d -name vendor -prune -exec rm -rf {} + 2>/dev/null || true
 find "$BUILD" -name '*.pyc' -delete 2>/dev/null || true
 
 # Zip the survey-qa directory (Skills expect a single folder at the zip root)
