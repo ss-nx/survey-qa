@@ -1,15 +1,22 @@
 """FastMCP server for survey-qa.
 
-Tools exposed:
-- get_survey_model_schema()           → JSON Schema for SurveyModel
-- parse_xml(file_path)                → SurveyModel (XML side, deterministic)
-- run_checks(xml_path, doc_survey)    → findings + summary
-- list_checks()                       → registered checks
-- generate_report(xml_path, findings, output_path) → Excel path
+Compares a Forsta Decipher XML survey against a client questionnaire (Word
+or PDF) using a deterministic Python pipeline plus Claude's reading of the
+questionnaire authored in the compact format. Designed for distribution as
+an MCPB bundle so Claude Desktop's bundled `uv` handles Python/deps
+automatically across macOS, Linux, and Windows.
 
-In MCP mode Claude is the doc parser. It reads the questionnaire from the
-conversation, constructs SurveyModel-shaped JSON (the same shape `parse_xml`
-returns), and passes it as `doc_survey`. Pydantic validates on receipt.
+Workflow Claude follows when invoked
+------------------------------------
+  1. `parse_xml(xml_path)`                         → XML-side SurveyModel
+  2. `extract_doc_text(doc_path)`                  → text + <b>/<i>/<u> tags
+  3. Claude reads that text and authors a compact-format string covering
+     every question, applying the rules returned by `get_workflow_guide()`.
+  4. `check_survey(xml_path, doc_compact)`         → findings + summary
+  5. Optionally `generate_report(...)`             → Excel report
+
+`get_workflow_guide()` returns the compact-format spec — Claude calls it
+once at the start of a QA session if the format isn't already in context.
 """
 
 from __future__ import annotations
@@ -24,13 +31,14 @@ from ..checks import registered_checks
 from ..checks import run_checks as _run_checks
 from ..checks.routing_checks import run_routing_checks
 from ..core.models import Finding, SurveyModel
+from ..doc_parser.compact_parser import CompactParseError, parse_compact
+from ..doc_parser.extractor import extract_docx, extract_pdf
 from ..doc_parser.normalizer import normalize_labels
 from ..reporters.excel import write_report
 from ..xml_parser import parse as parse_xml_file
 
 log = logging.getLogger(__name__)
 
-# Import FastMCP lazily so the package imports cleanly without the mcp extra
 try:
     from mcp.server.fastmcp import FastMCP
 except ImportError as exc:  # pragma: no cover
@@ -42,32 +50,138 @@ except ImportError as exc:  # pragma: no cover
 mcp = FastMCP("survey-qa")
 
 
+_WORKFLOW_GUIDE = """\
+# survey-qa compact format — authoring guide
+
+You are running a survey QA workflow. The user has a Decipher XML survey
+script and a questionnaire document (Word or PDF). Your job is to compare
+them and surface every place the XML doesn't match the questionnaire.
+
+Use the MCP tools in this order:
+
+  1. `parse_xml(xml_path)`             — produces the XML-side SurveyModel
+  2. `extract_doc_text(doc_path)`      — produces formatted text from .docx/.pdf
+  3. Author a compact-format string covering every survey element (rules below)
+  4. `check_survey(xml_path, doc_compact)` — runs all QA checks
+  5. (optional) `generate_report(...)` — writes a color-coded Excel report
+
+## Compact format — one block per survey element
+
+```
+## <type>
+<title text>
+<key>: <value>
+options:
+  1. <option text>  [tag] [tag]
+  2. <option text>
+```
+
+- Header: `## <type>` or `## <type> [label]`. Recognized types: radio,
+  checkbox, text, number, float, select, html, term, quota, goto.
+  Use `[label]` when the questionnaire labels the question (e.g.
+  `## radio [S1]`); omit when it doesn't (parser auto-binds via title
+  similarity).
+- Title: free text on the line(s) below the header.
+- Keys: flags, atleast, display, options, choices, rows, cols, target,
+  sheet, overquota, term, note. Emit only when the default differs.
+
+## Always-numbered options
+
+Every list item is `N. text`. The number is the option's `value`. If the
+questionnaire shows codes (e.g. `99. Refused`), copy them verbatim;
+otherwise number sequentially `1..N`. Applies to `options:`, `rows:`,
+`cols:`, `choices:`.
+
+## Row tags
+
+- `[open]`   — "Other, please specify" type rows
+- `[exclusive]` — "None of the above" / "Prefer not to say"
+
+## Termination
+
+Block-level `term:` expresses screen-out conditions using coordinates and
+boolean operators:
+- Coordinates: `rN`, `rN.cM`, `cN`
+- Operators: `and`, `or`, `not`, parens
+- Comma is shorthand for OR
+- Examples: `term: r4`, `term: r1.c5, r2.c5`, `term: r3 and r4`,
+  `term: (r1 and r2) or r3`
+
+## Text formatting & structure
+
+Preserve formatting from the doc using HTML tags (matches XML side):
+- Bold `<b>...</b>`, italic `<i>...</i>`, underline `<u>...</u>`
+- Visible line break `<br>`
+- Inline list `<ul><li>...</li></ul>` (or `<ol>`)
+- Ignore color
+
+## Example blocks
+
+```
+## radio [S1]
+Where do you live?
+options:
+  1. United States
+  2. Canada
+  3. United Kingdom
+  98. Other, please specify  [open]
+  99. I prefer not to answer  [exclusive]
+
+## checkbox [S4]
+Select <b>all</b> that apply.
+atleast: 1
+options:
+  1. Netflix
+  2. Hulu
+  3. Disney+
+  99. None of the above  [exclusive]
+
+## radio [S2]
+What is your age?
+term: r4
+options:
+  1. 18-24
+  2. 25-34
+  3. 35-44
+  4. Under 18
+```
+
+## Important rules
+
+- The questionnaire is the source of truth. Phrase findings as "XML should
+  match the questionnaire."
+- Don't invent content, labels, or codes the doc doesn't show.
+- Don't paraphrase — copy text verbatim including punctuation.
+- One option per compact-format line; use `<br>` for intentional in-option
+  line breaks.
+- For ambiguous content, add a `note:` line — it surfaces in the report.
+"""
+
+
 # ── Tools ────────────────────────────────────────────────────────────────────
 
 
 @mcp.tool()
-def get_survey_model_schema() -> dict[str, Any]:
-    """Return the JSON Schema for SurveyModel.
+def get_workflow_guide() -> str:
+    """Return the survey-qa workflow + compact-format authoring guide.
 
-    Use this when constructing the `doc_survey` argument for `run_checks` —
-    your data must conform to this schema. SurveyModel.elements is a
-    discriminated union by `tag` field: each element must have a `tag` of
-    'radio' | 'checkbox' | 'text' | 'number' | 'float' | 'select' | 'html' |
-    'rating' | 'rank' | 'ranksort' | 'term' | 'quota' | 'goto' | 'suspend'.
+    Call this once at the start of a QA session if you're unfamiliar with
+    the compact format. The guide explains every block type, the tag set,
+    formatting conventions, and termination syntax.
     """
-    return SurveyModel.model_json_schema()
+    return _WORKFLOW_GUIDE
 
 
 @mcp.tool()
 def parse_xml(file_path: str) -> dict[str, Any]:
-    """Parse a Decipher XML survey file into a SurveyModel (no LLM).
+    """Parse a Decipher XML survey file into a SurveyModel (deterministic, no LLM).
 
     Args:
         file_path: Path to the .xml file.
 
     Returns:
         Serialized SurveyModel — survey_label, elements (questions, terms,
-        quotas, gotos, suspends, in document order).
+        quotas, gotos, suspends, in document order), or {"error": ...}.
     """
     path = Path(file_path).expanduser()
     if not path.exists():
@@ -80,47 +194,64 @@ def parse_xml(file_path: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def run_checks(xml_path: str, doc_survey: dict[str, Any]) -> dict[str, Any]:
-    """Run all QA checks comparing an XML survey against a doc-side SurveyModel.
+def extract_doc_text(file_path: str) -> dict[str, Any]:
+    """Extract plain text from a .docx or .pdf, preserving inline formatting.
 
-    The doc_survey argument is constructed by you (Claude) from the
-    questionnaire document. Its shape must match SurveyModel — call
-    `get_survey_model_schema()` first if unsure. Pydantic validates on receipt;
-    a validation failure returns an error response with details.
-
-    For each respondent-facing question type, populate the matching
-    XmlElement variant:
-      - radio    → tag='radio', label, title, rows[]
-      - checkbox → tag='checkbox', label, title, rows[], atleast
-      - text     → tag='text', label, title
-      - select   → tag='select', label, title, choices[]
-      - number / float / html / rating → similar minimal shape
-
-    Each row needs: label, text, text_raw, id (use synthetic IDs like
-    "doc:Q1:r1" — they only need to be unique within the doc-side model).
-
-    If a field isn't extractable from the document, leave it at its default
-    (None / empty list). Checks handle missing doc-side data gracefully.
+    Bold, italic, and underline runs are emitted as `<b>`, `<i>`, `<u>` HTML
+    tags so they survive into the compact format you'll author and match the
+    XML side's inline markup. Color is intentionally not preserved.
 
     Args:
-        xml_path: Path to the Decipher XML survey file.
-        doc_survey: SurveyModel-shaped JSON representing the questionnaire.
+        file_path: Path to the .docx or .pdf file.
 
     Returns:
-        Dict with `findings` (list of Finding objects) and `summary` (counts
-        of errors / warnings / infos), or `error` if validation fails.
+        {"text": "..."} with the extracted content, or {"error": ...}.
+    """
+    path = Path(file_path).expanduser()
+    if not path.exists():
+        return {"error": f"File not found: {file_path}"}
+    suffix = path.suffix.lower()
+    try:
+        if suffix == ".docx":
+            text = extract_docx(path)
+        elif suffix == ".pdf":
+            text = extract_pdf(path)
+        else:
+            return {"error": f"Unsupported extension: {suffix!r} (expected .docx or .pdf)"}
+    except Exception as exc:
+        return {"error": f"Extraction failed: {exc}"}
+    return {"text": text}
+
+
+@mcp.tool()
+def check_survey(xml_path: str, doc_compact: str) -> dict[str, Any]:
+    """Parse the compact-format doc, run all QA checks, return findings.
+
+    Steps internally: compact-format → SurveyModel → label normalization
+    (exact / fuzzy / title-similarity) → question + routing checks.
+
+    Args:
+        xml_path: Path to the Decipher XML survey.
+        doc_compact: Compact-format string you authored from the
+            questionnaire. See `get_workflow_guide()` for the format spec.
+
+    Returns:
+        {
+          "findings": [...],
+          "summary": {errors, warnings, infos, total},
+          "normalization_warnings": [...],
+          "unmatched_labels": [...]
+        }
+        or {"error": ...} for malformed inputs.
     """
     xml_path_obj = Path(xml_path).expanduser()
     if not xml_path_obj.exists():
         return {"error": f"XML file not found: {xml_path}"}
 
     try:
-        doc_model = SurveyModel.model_validate(doc_survey)
-    except ValidationError as exc:
-        return {
-            "error": "doc_survey did not validate against SurveyModel",
-            "validation_errors": exc.errors(),
-        }
+        doc_model = parse_compact(doc_compact)
+    except CompactParseError as exc:
+        return {"error": f"Compact-format parse failed: {exc}"}
 
     try:
         xml_model = parse_xml_file(xml_path_obj)
@@ -151,8 +282,7 @@ def run_checks(xml_path: str, doc_survey: dict[str, Any]) -> dict[str, Any]:
 @mcp.tool()
 def list_checks() -> list[dict[str, str]]:
     """List all registered QA checks (id + description)."""
-    # Side-effect imports register the check classes
-    from ..checks import (  # noqa: F401
+    from ..checks import (  # noqa: F401 — side-effect import registers checks
         checkbox_checks,
         question_checks,
         radio_checks,
@@ -179,11 +309,11 @@ def generate_report(
 
     Args:
         xml_path: Path to the XML survey (used to populate the Questions sheet).
-        findings: List of Finding-shaped dicts (typically from run_checks).
+        findings: Findings list (typically straight from check_survey()).
         output_path: Where to write the .xlsx file.
 
     Returns:
-        Dict with `path` (absolute path written) or `error`.
+        {"path": "/abs/path/to/output.xlsx"} or {"error": ...}.
     """
     xml_path_obj = Path(xml_path).expanduser()
     out = Path(output_path).expanduser().resolve()

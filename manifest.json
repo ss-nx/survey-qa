@@ -2,8 +2,8 @@
   "manifest_version": "0.4",
   "name": "survey-qa",
   "display_name": "Survey QA",
-  "version": "0.1.0",
-  "description": "Compare a Forsta Decipher XML survey against a client questionnaire (Word/PDF) and surface QA findings.",
+  "version": "0.2.0",
+  "description": "Compare a Forsta Decipher XML survey against a client questionnaire (Word/PDF) and surface QA findings. Doc-side authoring uses a compact text format parsed deterministically into the unified model.",
   "author": {
     "name": "ss-nx"
   },
@@ -28,16 +28,20 @@
   },
   "tools": [
     {
-      "name": "get_survey_model_schema",
-      "description": "Return the JSON Schema for SurveyModel — use when constructing doc-side data for run_checks."
+      "name": "get_workflow_guide",
+      "description": "Return the survey-qa workflow + compact-format authoring guide. Call once at the start of a QA session."
     },
     {
       "name": "parse_xml",
       "description": "Parse a Decipher XML survey file into the unified SurveyModel (deterministic, no LLM)."
     },
     {
-      "name": "run_checks",
-      "description": "Compare an XML survey against a doc-side SurveyModel and return findings + summary."
+      "name": "extract_doc_text",
+      "description": "Extract plain text from a .docx or .pdf, preserving inline bold/italic/underline as HTML tags."
+    },
+    {
+      "name": "check_survey",
+      "description": "Parse a compact-format doc string, run all QA checks against the XML, and return findings."
     },
     {
       "name": "list_checks",
