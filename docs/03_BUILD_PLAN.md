@@ -34,29 +34,17 @@ Both parsers produce the same `XmlElement` types — no separate `QuestionnaireM
 
 ### MCPB packaging ✅
 
-`manifest.json` + `scripts/build_mcpb.sh` produce `dist/survey-qa.mcpb` (~44 KB) for Claude Desktop one-click install. Available for team distribution.
+`manifest.json` + `scripts/build_mcpb.sh` produce `dist/survey-qa.mcpb` for Claude Desktop install. `uv` (bundled with Desktop) handles Python + deps automatically, so distribution is cross-platform with zero per-user setup. This is the sole supported team-distribution path.
 
-### Skill packaging ✅
+### Compact-format authoring ✅
 
-`skills/survey-qa/` directory with `SKILL.md` + script wrappers. `scripts/build_skill.sh` produces `dist/survey-qa-skill.zip` (~48 KB) installable on claude.ai, Claude Desktop, and Claude Code. Currently the primary team-distribution path because Skills work without an API key (Claude does the doc parsing in its sandbox).
+The MCP `check_survey` tool accepts a compact text format Claude authors from the questionnaire (instead of the older approach where Claude had to author the entire doc-side `SurveyModel` as JSON inline — ~100 KB of structured output, prone to malformed JSON, slow). The deterministic `compact_parser.py` turns it into the same unified model.
 
----
+**Spec:** [`08_COMPACT_FORMAT.md`](08_COMPACT_FORMAT.md). Inline guide returned by the `get_workflow_guide` MCP tool.
 
-## In flight
+### Skill packaging — retired
 
-### Compact-format redesign (doc-parser v2)
-
-The Skill's v1 design has Claude author the entire doc-side `SurveyModel` as JSON inside a tool call — ~100 KB of structured output, ~12 minutes of sequential generation for a 57-question survey. Most of that time is the LLM producing XML-flavored structural fields (`id`, `position`, `title_raw`, per-row IDs) it has no real information about.
-
-The redesign moves the doc-side input to a plain-text "compact format" that captures just the things only an LLM can do: classify question types, extract titles and option text verbatim, apply doc-specified flags. A deterministic parser fills in defaults and templates.
-
-**Spec:** [`08_COMPACT_FORMAT.md`](08_COMPACT_FORMAT.md) — currently under review with six open questions (O-1 through O-6).
-
-**Once locked, the work is:**
-- `survey_qa/doc_parser/compact_parser.py` — deterministic compact-text → `SurveyModel` parser with question-type templates
-- `survey_qa/doc_parser/normalizer.py` — add 6th strategy: title-similarity matching (because doc-side labels are now synthetic)
-- Rewrite `skills/survey-qa/SKILL.md` so Claude produces compact text, not JSON
-- Benchmark against the same questionnaire to confirm the 5–10× output-token reduction
+Earlier work shipped a Skill bundle (`skills/survey-qa/` + `scripts/build_skill.sh`). It was retired after the Cowork sandbox revealed the Skill design fundamentally couldn't survive read-only filesystems and locked Python versions. The MCP path works in those environments because `uv`/Anthropic provides the runtime. All Skill files were removed.
 
 ---
 
@@ -152,18 +140,8 @@ src/survey_qa/
     ├── server.py              # FastMCP entry point
     └── __init__.py
 
-skills/survey-qa/
-├── SKILL.md
-└── scripts/
-    ├── _bootstrap.py
-    ├── parse_xml.py
-    ├── extract_doc_text.py
-    ├── run_checks.py
-    └── make_report.py
-
 manifest.json                  # MCPB manifest
 
 scripts/
-├── build_mcpb.sh
-└── build_skill.sh
+└── build_mcpb.sh
 ```

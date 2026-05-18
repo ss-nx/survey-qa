@@ -7,48 +7,76 @@ A Python tool that compares a **Forsta Decipher XML survey script** against a **
 > - [`04_DECIPHER_XML_REFERENCE.md`](docs/04_DECIPHER_XML_REFERENCE.md) — XML element reference
 > - [`05_CODING_CONVENTIONS.md`](docs/05_CODING_CONVENTIONS.md) — how to add checks, models, and question types
 > - [`06_RADIO_ELEMENT_REFERENCE.md`](docs/06_RADIO_ELEMENT_REFERENCE.md) — full radio element attributes
-> - [`08_COMPACT_FORMAT.md`](docs/08_COMPACT_FORMAT.md) — doc-side compact format spec (in-progress redesign of the doc parser; under review)
-> - `07_DECIPHER_FUNCTION_LIBRARY.md` — Decipher function library (`ans`, `flt`, `label`, etc.); to be added
-> - [`STALE_01_PROJECT_OVERVIEW.md`](docs/STALE_01_PROJECT_OVERVIEW.md), [`STALE_02_ARCHITECTURE.md`](docs/STALE_02_ARCHITECTURE.md) — pending refresh; mostly accurate but don't yet reflect the Skill surface or the compact-format redesign
+> - [`08_COMPACT_FORMAT.md`](docs/08_COMPACT_FORMAT.md) — compact format spec used by the MCP `check_survey` tool
+> - [`STALE_01_PROJECT_OVERVIEW.md`](docs/STALE_01_PROJECT_OVERVIEW.md), [`STALE_02_ARCHITECTURE.md`](docs/STALE_02_ARCHITECTURE.md) — pending refresh
 >
 ## What it does
 
 1. Parses the Decipher XML into typed models — questions, rows, routing, structural elements.
-2. Parses the questionnaire document using a two-stage pipeline: local text extraction followed by an LLM call that returns structured data. Results are cached so repeat runs cost nothing.
-3. Aligns labels between the two sources using a five-pass fuzzy matching strategy (exact → case-insensitive → prefix strip → suffix → fuzzy).
-4. Runs 26 QA checks across question types and routing logic.
-5. Reports findings as a rich CLI table and/or an Excel report.
+2. Lets Claude author a compact-format representation of the questionnaire (after `extract_doc_text` returns text with inline `<b>/<i>/<u>` tags). The deterministic Python parser turns that compact text into the same unified model.
+3. Aligns labels between the two sides — exact / case-insensitive / prefix-strip / suffix / fuzzy on labels, plus title similarity when the doc didn't carry labels.
+4. Runs all QA checks across question types and routing logic.
+5. Reports findings as JSON or a color-coded Excel report.
 
-## Four ways to use it
+## How to use it
 
-| Mode | Best for | Needs API key |
-|---|---|---|
-| **Skill (claude.ai / Desktop / Code)** | Primary team-distribution path — works across all Claude surfaces, no per-user setup | No (Claude does the doc parsing in its sandbox) |
-| **MCPB (Claude Desktop)** | Drag-and-drop install for Claude Desktop users specifically | Yes (server-side, for the instructor doc parser) |
-| **CLI** | Batch runs, CI/CD, scripting | Yes (OpenAI / Anthropic / Gemini / Ollama) |
-| **FastAPI** | Programmatic integration | Yes |
+Distribution is via a single MCP server (MCPB bundle) for Claude Desktop, plus a CLI for batch use.
 
-The Skill bundles the same Python library as the other surfaces, but the doc parsing happens in Claude's reasoning + a deterministic compact-text parser (in progress — see [`docs/08_COMPACT_FORMAT.md`](docs/08_COMPACT_FORMAT.md)) instead of via instructor + litellm. That's why the Skill doesn't need an API key.
+| Surface | How |
+|---|---|
+| **Claude Desktop** | Drag `dist/survey-qa.mcpb` in. `uv` (bundled with Desktop) handles Python + deps automatically. Cross-platform. |
+| **CLI** | `pip install -e .` then `survey-qa <xml> <questionnaire>` for batch runs or CI. |
+| **FastAPI** | `uvicorn survey_qa.api.main:app` for programmatic integration. |
 
-See [Install for Claude Desktop](#install-for-claude-desktop-mcpb) below for the MCPB path. See `dist/survey-qa-skill.zip` (built via `scripts/build_skill.sh`) for the Skill bundle to upload.
+If your org's Extension policy blocks the standard install, use **Settings → Extensions → Advanced Settings → Install Unpacked Extension** and point at `dist/build/` (the unpacked staging directory built by `scripts/build_mcpb.sh`).
 
 ---
 
-## Quick start
+## Install for Claude Desktop (MCPB)
 
-**Requirements:** Python 3.12+, an LLM API key.
+### Build the `.mcpb` (maintainer)
 
 ```bash
-# Clone and set up
+scripts/build_mcpb.sh
+# Output: dist/survey-qa.mcpb
+```
+
+### Install (each team member)
+
+1. Send them `dist/survey-qa.mcpb` (Slack, shared drive, GitHub release).
+2. They open Claude Desktop → **Settings → Extensions → Install Extension** → select the file.
+3. If org policy blocks it, fall back to **Install Unpacked Extension** pointing at the build directory.
+
+Six tools become available:
+
+- `get_workflow_guide` — returns the compact-format authoring guide
+- `parse_xml` — XML → SurveyModel JSON
+- `extract_doc_text` — .docx/.pdf → text with inline formatting tags
+- `check_survey` — compact-format string + XML path → findings
+- `list_checks` — registered checks (debugging)
+- `generate_report` — Excel report writer
+
+### Usage
+
+In any conversation, attach the survey XML and the questionnaire (.docx/.pdf) and say:
+
+> "Use survey-qa to QA this survey."
+
+Claude reads the questionnaire, authors a compact-format representation, calls `check_survey`, and explains the findings — optionally writing an Excel report via `generate_report`.
+
+---
+
+## Quick start (CLI / dev)
+
+**Requirements:** Python 3.11+.
+
+```bash
 git clone <repo>
 cd xml_parser
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[api]"
 
-# Configure (copy and edit)
-cp .env.example .env
-
-# XML-only scan (no LLM, free)
+# XML-only scan
 survey-qa survey.xml
 
 # Full comparison against a Word questionnaire
@@ -58,76 +86,7 @@ survey-qa survey.xml questionnaire.docx
 survey-qa survey.xml questionnaire.docx --output report.xlsx
 ```
 
----
-
-## LLM provider
-
-The tool uses [`litellm`](https://docs.litellm.ai) as a provider abstraction — switching models is a single env-var change, no code changes required.
-
-Set `LITELLM_MODEL` and the matching API key in `.env`:
-
-```bash
-# OpenAI (default)
-LITELLM_MODEL=gpt-4o-mini
-OPENAI_API_KEY=sk-...
-
-# Google Gemini via AI Studio
-LITELLM_MODEL=gemini/gemini-2.0-flash
-GEMINI_API_KEY=...
-
-# Anthropic
-LITELLM_MODEL=claude-3-haiku-20240307
-ANTHROPIC_API_KEY=sk-ant-...
-
-# Local (no key needed)
-LITELLM_MODEL=ollama/llama3
-```
-
-Parsed questionnaire results are cached on disk. Re-running on the same file costs $0.
-
----
-
-## Install for Claude Desktop (MCPB)
-
-The simplest way to use this tool — and the path for sharing with your team — is to install it as a Claude Desktop Extension. No terminal, no API key required (Claude does the doc parsing natively from the conversation).
-
-### Build the `.mcpb` file (maintainer)
-
-```bash
-scripts/build_mcpb.sh
-# Output: dist/survey-qa.mcpb (~44 KB)
-```
-
-### Install (each team member)
-
-1. Send them the `dist/survey-qa.mcpb` file (Slack, shared drive, GitHub release).
-2. They open Claude Desktop, drag the `.mcpb` onto the window, click "Install."
-3. Done. Five tools become available in their Claude Desktop:
-   - `parse_xml`, `run_checks`, `list_checks`, `generate_report`, `get_survey_model_schema`
-
-### Usage in Claude Desktop
-
-In any conversation, attach the questionnaire (.docx/.pdf) and the survey XML, then ask:
-
-> "Use survey-qa to compare survey.xml against this questionnaire and tell me what's broken."
-
-Claude reads the questionnaire, calls `parse_xml`, builds a doc-side `SurveyModel`, calls `run_checks`, and explains the findings — optionally writing an Excel report via `generate_report`.
-
-### Manual registration (alternative to MCPB)
-
-If you'd rather skip the MCPB packaging and register the MCP server directly from source, add this to `~/Library/Application Support/Claude/claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "survey-qa": {
-      "command": "/absolute/path/to/.venv/bin/survey-qa-mcp"
-    }
-  }
-}
-```
-
-Restart Claude Desktop. Same five tools become available.
+The CLI uses the older LLM-based doc parser path (`instructor` + `litellm` + `diskcache`). Configure with `LITELLM_MODEL` and the matching API key in `.env`. Parsed questionnaire results are cached so repeat runs cost nothing.
 
 ---
 
@@ -150,30 +109,29 @@ Restart Claude Desktop. Same five tools become available.
 src/survey_qa/
 ├── core/           models + utilities      (no I/O — imported by everything)
 ├── xml_parser/     lxml XML → SurveyModel  (imports core only)
-├── doc_parser/     docx/pdf + LLM → QuestionnaireModel
-│   ├── base.py             abstract parser + file-extension factory
-│   ├── config.py           LLMConfig loaded from env
-│   ├── extractor.py        stage 1: raw text extraction
-│   ├── chunker.py          stage 1: heuristic block splitting
-│   ├── docx_parser.py      .docx implementation
-│   ├── pdf_parser.py       .pdf implementation
-│   ├── llm_extractor.py    stage 2: instructor + litellm + diskcache
-│   └── normalizer.py       fuzzy label alignment
+├── doc_parser/
+│   ├── compact_parser.py     Claude-authored compact text → SurveyModel (used by MCP)
+│   ├── normalizer.py         label alignment (5 strategies + title similarity)
+│   ├── extractor.py          formatting-aware .docx/.pdf → text
+│   ├── chunker.py            heuristic block splitting (used by LLM path)
+│   ├── docx_parser.py        .docx implementation     ┐
+│   ├── pdf_parser.py         .pdf implementation      │ used by the CLI's
+│   ├── llm_extractor.py      LLM-driven JSON authoring│ older LLM-JSON path
+│   ├── extractor.py / config / base                   ┘
 ├── checks/         QA check registry       (imports core only)
 ├── reporters/      Excel report writer     (imports core only)
+├── mcp/            FastMCP server (MCPB distribution)
 └── api/
     ├── cli.py      typer CLI
     ├── main.py     FastAPI app
     └── routes/qa.py  POST /qa/xml, POST /qa/compare
 ```
 
-Dependency direction is strictly one-way: `core → xml_parser | doc_parser | checks → api`. Each sub-module can be extracted into its own package without circular dependency issues.
+Dependency direction: `core → xml_parser | doc_parser | checks → mcp | api`. Each sub-module can be extracted without circular dependency issues.
 
 ---
 
 ## API
-
-Start the server:
 
 ```bash
 uvicorn survey_qa.api.main:app --reload
@@ -185,7 +143,7 @@ uvicorn survey_qa.api.main:app --reload
 | `/qa/xml` | POST | Parse an XML file, return survey summary |
 | `/qa/compare` | POST | Parse XML + questionnaire, return findings |
 
-Interactive docs available at `http://localhost:8000/docs`.
+Interactive docs at `http://localhost:8000/docs`.
 
 ---
 
@@ -193,21 +151,21 @@ Interactive docs available at `http://localhost:8000/docs`.
 
 ```bash
 pip install -e ".[dev]"
-pytest                    # 124 tests
+pytest                    # full test suite
 pytest --cov=survey_qa    # with coverage
 ```
 
 ### Adding a new check
 
 1. Create a function or class in the relevant `checks/` file.
-2. Decorate with `@register_check` (or call `run_routing_checks` for survey-level checks).
+2. Decorate with `@register_check` (or register in `run_routing_checks` for survey-level checks).
 3. Add a test in `tests/test_checks.py`.
 
 No other changes needed — the registry picks it up automatically.
 
 ---
 
-## Environment variables
+## Environment variables (CLI / FastAPI only — the MCP doesn't need any)
 
 | Variable | Default | Description |
 |---|---|---|
