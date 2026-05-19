@@ -64,9 +64,10 @@ them and surface every place the XML doesn't match the questionnaire.
      <b>/<i>/<u> tags. Read it carefully and author a compact-format string
      covering every survey element (rules below).
 
-  2. `run_qa(xml_path, doc_compact, output_path?)`
-     Parses the XML, runs all QA checks, optionally writes an Excel report.
-     Returns findings, summary counts, and normalization warnings.
+  2. `run_qa(xml_path, doc_compact, output_path?, compact_path?)`
+     Parses the XML, runs all QA checks, optionally writes an Excel report and
+     saves the compact string to disk. Always pass compact_path so the extraction
+     is preserved for re-runs without re-reading the doc.
 
 Use `parse_xml`, `check_survey`, and `generate_report` individually only when
 you need to inspect or re-run a specific step.
@@ -290,19 +291,24 @@ def run_qa(
     xml_path: str,
     doc_compact: str,
     output_path: str | None = None,
+    compact_path: str | None = None,
 ) -> dict[str, Any]:
-    """Parse compact-format doc, run all QA checks, optionally write Excel report.
+    """Parse compact-format doc, run all QA checks, optionally write outputs.
 
     This is the single call for the primary workflow — it combines check_survey
     and generate_report into one step.
 
     Args:
-        xml_path:     Path to the Decipher XML survey.
-        doc_compact:  Compact-format string you authored from the questionnaire.
-                      See get_workflow_guide() for the format spec.
-        output_path:  Optional path for the Excel report (.xlsx). When provided
-                      the report is written and its path is included in the
-                      response. Omit if you only need the findings JSON.
+        xml_path:      Path to the Decipher XML survey.
+        doc_compact:   Compact-format string you authored from the questionnaire.
+                       See get_workflow_guide() for the format spec.
+        output_path:   Optional path for the Excel report (.xlsx). When provided
+                       the report is written and its path is included in the
+                       response. Omit if you only need the findings JSON.
+        compact_path:  Optional path to save the compact-format string (.txt).
+                       Useful for re-running checks later without re-parsing the
+                       doc, or for reviewing what was extracted. Saved before
+                       checks run so it's preserved even if checks fail.
 
     Returns:
         {
@@ -310,7 +316,8 @@ def run_qa(
           "summary": {errors, warnings, infos, total},
           "normalization_warnings": [...],
           "unmatched_labels": [...],
-          "report_path": "/abs/path/to/report.xlsx"  # only when output_path given
+          "compact_path": "/abs/path/to/compact.txt",  # only when compact_path given
+          "report_path": "/abs/path/to/report.xlsx"    # only when output_path given
         }
         or {"error": ...} for malformed inputs.
     """
@@ -322,6 +329,15 @@ def run_qa(
         doc_model = parse_compact(doc_compact)
     except CompactParseError as exc:
         return {"error": f"Compact-format parse failed: {exc}"}
+
+    # Save compact string early — preserved even if checks fail
+    if compact_path:
+        compact_out = Path(compact_path).expanduser().resolve()
+        try:
+            compact_out.parent.mkdir(parents=True, exist_ok=True)
+            compact_out.write_text(doc_compact, encoding="utf-8")
+        except Exception as exc:
+            return {"error": f"Failed to save compact file: {exc}"}
 
     try:
         xml_model = parse_xml_file(xml_path_obj)
@@ -347,6 +363,9 @@ def run_qa(
         "normalization_warnings": norm.warnings,
         "unmatched_labels": norm.unmatched,
     }
+
+    if compact_path:
+        result["compact_path"] = str(compact_out)
 
     if output_path:
         out = Path(output_path).expanduser().resolve()
