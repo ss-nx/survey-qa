@@ -57,13 +57,19 @@ You are running a survey QA workflow. The user has a Decipher XML survey
 script and a questionnaire document (Word or PDF). Your job is to compare
 them and surface every place the XML doesn't match the questionnaire.
 
-Use the MCP tools in this order:
+## Primary workflow (2 tool calls)
 
-  1. `parse_xml(xml_path)`             — produces the XML-side SurveyModel
-  2. `extract_doc_text(doc_path)`      — produces formatted text from .docx/.pdf
-  3. Author a compact-format string covering every survey element (rules below)
-  4. `check_survey(xml_path, doc_compact)` — runs all QA checks
-  5. (optional) `generate_report(...)` — writes a color-coded Excel report
+  1. `extract_doc_text(doc_path)`
+     Returns the questionnaire text with inline formatting preserved as
+     <b>/<i>/<u> tags. Read it carefully and author a compact-format string
+     covering every survey element (rules below).
+
+  2. `run_qa(xml_path, doc_compact, output_path?)`
+     Parses the XML, runs all QA checks, optionally writes an Excel report.
+     Returns findings, summary counts, and normalization warnings.
+
+Use `parse_xml`, `check_survey`, and `generate_report` individually only when
+you need to inspect or re-run a specific step.
 
 ## Compact format — one block per survey element
 
@@ -277,6 +283,80 @@ def check_survey(xml_path: str, doc_compact: str) -> dict[str, Any]:
         "normalization_warnings": norm.warnings,
         "unmatched_labels": norm.unmatched,
     }
+
+
+@mcp.tool()
+def run_qa(
+    xml_path: str,
+    doc_compact: str,
+    output_path: str | None = None,
+) -> dict[str, Any]:
+    """Parse compact-format doc, run all QA checks, optionally write Excel report.
+
+    This is the single call for the primary workflow — it combines check_survey
+    and generate_report into one step.
+
+    Args:
+        xml_path:     Path to the Decipher XML survey.
+        doc_compact:  Compact-format string you authored from the questionnaire.
+                      See get_workflow_guide() for the format spec.
+        output_path:  Optional path for the Excel report (.xlsx). When provided
+                      the report is written and its path is included in the
+                      response. Omit if you only need the findings JSON.
+
+    Returns:
+        {
+          "findings": [...],
+          "summary": {errors, warnings, infos, total},
+          "normalization_warnings": [...],
+          "unmatched_labels": [...],
+          "report_path": "/abs/path/to/report.xlsx"  # only when output_path given
+        }
+        or {"error": ...} for malformed inputs.
+    """
+    xml_path_obj = Path(xml_path).expanduser()
+    if not xml_path_obj.exists():
+        return {"error": f"XML file not found: {xml_path}"}
+
+    try:
+        doc_model = parse_compact(doc_compact)
+    except CompactParseError as exc:
+        return {"error": f"Compact-format parse failed: {exc}"}
+
+    try:
+        xml_model = parse_xml_file(xml_path_obj)
+    except Exception as exc:
+        return {"error": f"XML parse failed: {exc}"}
+
+    norm = normalize_labels(xml_model, doc_model)
+    doc_aligned = norm.aligned_model
+
+    findings: list[Finding] = (
+        _run_checks(xml_model, doc_aligned)
+        + run_routing_checks(xml_model, doc_aligned)
+    )
+
+    result: dict[str, Any] = {
+        "findings": [f.model_dump() for f in findings],
+        "summary": {
+            "errors": sum(1 for f in findings if f.severity == "error"),
+            "warnings": sum(1 for f in findings if f.severity == "warning"),
+            "infos": sum(1 for f in findings if f.severity == "info"),
+            "total": len(findings),
+        },
+        "normalization_warnings": norm.warnings,
+        "unmatched_labels": norm.unmatched,
+    }
+
+    if output_path:
+        out = Path(output_path).expanduser().resolve()
+        try:
+            write_report(out, xml_model, findings)
+            result["report_path"] = str(out)
+        except Exception as exc:
+            result["report_error"] = f"Report generation failed: {exc}"
+
+    return result
 
 
 @mcp.tool()

@@ -13,13 +13,36 @@ import pytest
 from survey_qa.core.models import SurveyModel
 from survey_qa.doc_parser.chunker import TextChunk, batch_chunks, split_into_chunks
 from survey_qa.doc_parser.config import LLMConfig, load_config
-from survey_qa.doc_parser.llm_extractor import (
-    _cache_key,
-    _ExtractedOption,
-    _ExtractedQuestion,
-    _ExtractionResult,
-    extract_survey,
-)
+from survey_qa.doc_parser.llm_extractor import _cache_key, extract_survey
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _litellm_response(content: str) -> MagicMock:
+    """Build a minimal litellm completion response stub."""
+    msg = MagicMock()
+    msg.content = content
+    choice = MagicMock()
+    choice.message = msg
+    resp = MagicMock()
+    resp.choices = [choice]
+    return resp
+
+
+_COMPACT_TWO_QUESTIONS = """\
+## radio [Q1]
+How often do you use our product?
+options:
+  1. Daily
+  2. Weekly
+
+## radio [Q2]
+Please rate your satisfaction.
+options:
+  1. Very satisfied
+  2. Satisfied
+"""
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -136,32 +159,9 @@ def _make_config(tmp_path: Path) -> LLMConfig:
     return LLMConfig(model="gpt-4o-mini", cache_dir=tmp_path / "cache", max_retries=1)
 
 
-def _stub_extracted() -> list[_ExtractedQuestion]:
-    return [
-        _ExtractedQuestion(
-            label="Q1",
-            text="How often do you use our product?",
-            type_hint="radio",
-            options=[
-                _ExtractedOption(code="1", text="Daily"),
-                _ExtractedOption(code="2", text="Weekly"),
-            ],
-        ),
-        _ExtractedQuestion(
-            label="Q2",
-            text="Please rate your satisfaction.",
-            type_hint="radio",
-        ),
-    ]
-
-
-@patch("survey_qa.doc_parser.llm_extractor._get_client")
-def test_extract_survey_calls_llm_on_cache_miss(mock_get_client, tmp_path):
-    mock_client = MagicMock()
-    mock_get_client.return_value = mock_client
-    mock_client.chat.completions.create.return_value = _ExtractionResult(
-        questions=_stub_extracted()
-    )
+@patch("survey_qa.doc_parser.llm_extractor.litellm.completion")
+def test_extract_survey_calls_llm_on_cache_miss(mock_completion, tmp_path):
+    mock_completion.return_value = _litellm_response(_COMPACT_TWO_QUESTIONS)
 
     config = _make_config(tmp_path)
     result = extract_survey(SAMPLE_QUESTIONNAIRE, config)
@@ -169,57 +169,44 @@ def test_extract_survey_calls_llm_on_cache_miss(mock_get_client, tmp_path):
     assert isinstance(result, SurveyModel)
     assert len(result.elements) == 2
     assert result.elements[0].label == "Q1"
-    mock_client.chat.completions.create.assert_called_once()
+    mock_completion.assert_called_once()
 
 
-@patch("survey_qa.doc_parser.llm_extractor._get_client")
-def test_extract_survey_returns_cached_result(mock_get_client, tmp_path):
+@patch("survey_qa.doc_parser.llm_extractor.litellm.completion")
+def test_extract_survey_returns_cached_result(mock_completion, tmp_path):
     """Second call with same text must not hit the LLM."""
-    mock_client = MagicMock()
-    mock_get_client.return_value = mock_client
-    mock_client.chat.completions.create.return_value = _ExtractionResult(
-        questions=_stub_extracted()
-    )
+    mock_completion.return_value = _litellm_response(_COMPACT_TWO_QUESTIONS)
 
     config = _make_config(tmp_path)
     extract_survey(SAMPLE_QUESTIONNAIRE, config)  # prime the cache
     extract_survey(SAMPLE_QUESTIONNAIRE, config)  # should be served from cache
 
-    assert mock_client.chat.completions.create.call_count == 1
+    assert mock_completion.call_count == 1
 
 
-@patch("survey_qa.doc_parser.llm_extractor._get_client")
-def test_extract_survey_cache_miss_on_new_text(mock_get_client, tmp_path):
-    mock_client = MagicMock()
-    mock_get_client.return_value = mock_client
-    mock_client.chat.completions.create.return_value = _ExtractionResult(
-        questions=_stub_extracted()
-    )
+@patch("survey_qa.doc_parser.llm_extractor.litellm.completion")
+def test_extract_survey_cache_miss_on_new_text(mock_completion, tmp_path):
+    mock_completion.return_value = _litellm_response(_COMPACT_TWO_QUESTIONS)
 
     config = _make_config(tmp_path)
     extract_survey("Different text entirely.", config)
     extract_survey("Another different text.", config)
 
-    assert mock_client.chat.completions.create.call_count == 2
+    assert mock_completion.call_count == 2
 
 
-@patch("survey_qa.doc_parser.llm_extractor._get_client")
-def test_extract_survey_populates_parser_meta(mock_get_client, tmp_path):
-    """Doc parser must populate parser_meta with confidence and source info."""
-    mock_client = MagicMock()
-    mock_get_client.return_value = mock_client
-    mock_client.chat.completions.create.return_value = _ExtractionResult(
-        questions=[
-            _ExtractedQuestion(
-                label="Q1",
-                text="A question",
-                type_hint="radio",
-                confidence=0.85,
-                source_location="A question first",
-                routing_rules=["If Q1=1, skip to Q5"],
-            )
-        ]
-    )
+@patch("survey_qa.doc_parser.llm_extractor.litellm.completion")
+def test_extract_survey_populates_parser_meta(mock_completion, tmp_path):
+    """Doc parser must populate parser_meta fields from compact format."""
+    compact = """\
+## radio [Q1]
+A question
+display: If Q1=1, skip to Q5
+options:
+  1. Yes
+  2. No
+"""
+    mock_completion.return_value = _litellm_response(compact)
 
     config = _make_config(tmp_path)
     result = extract_survey("any text", config)
@@ -227,9 +214,25 @@ def test_extract_survey_populates_parser_meta(mock_get_client, tmp_path):
     q = result.elements[0]
     assert q.parser_meta is not None
     assert q.parser_meta.source == "doc"
-    assert q.parser_meta.confidence == 0.85
-    assert q.parser_meta.source_excerpt == "A question first"
+    assert q.parser_meta.confidence == 1.0
     assert q.parser_meta.raw_display_logic == "If Q1=1, skip to Q5"
+
+
+@patch("survey_qa.doc_parser.llm_extractor.litellm.completion")
+def test_extract_survey_retries_on_parse_error(mock_completion, tmp_path):
+    """If the LLM returns malformed compact text, one retry is attempted."""
+    # An unknown type header triggers CompactParseError in compact_parser
+    bad = "## unknowntype [Q1]\nSome question text\n"
+    mock_completion.side_effect = [
+        _litellm_response(bad),
+        _litellm_response(_COMPACT_TWO_QUESTIONS),
+    ]
+
+    config = _make_config(tmp_path)
+    result = extract_survey("some doc text", config)
+
+    assert isinstance(result, SurveyModel)
+    assert mock_completion.call_count == 2
 
 
 # ── DocxParser wiring (no real docx file) ────────────────────────────────────

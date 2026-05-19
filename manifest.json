@@ -2,7 +2,7 @@
   "manifest_version": "0.4",
   "name": "survey-qa",
   "display_name": "Survey QA",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Compare a Forsta Decipher XML survey against a client questionnaire (Word/PDF) and surface QA findings. Doc-side authoring uses a compact text format parsed deterministically into the unified model.",
   "author": {
     "name": "ss-nx"
@@ -32,24 +32,28 @@
       "description": "Return the survey-qa workflow + compact-format authoring guide. Call once at the start of a QA session."
     },
     {
-      "name": "parse_xml",
-      "description": "Parse a Decipher XML survey file into the unified SurveyModel (deterministic, no LLM)."
+      "name": "extract_doc_text",
+      "description": "Extract plain text from a .docx or .pdf, preserving inline bold/italic/underline as HTML tags. Step 1 of the primary workflow."
     },
     {
-      "name": "extract_doc_text",
-      "description": "Extract plain text from a .docx or .pdf, preserving inline bold/italic/underline as HTML tags."
+      "name": "run_qa",
+      "description": "Parse compact-format doc, run all QA checks against the XML, optionally write an Excel report. Step 2 of the primary workflow — combines check_survey and generate_report in one call."
+    },
+    {
+      "name": "parse_xml",
+      "description": "Parse a Decipher XML survey file into the unified SurveyModel (deterministic). Use for debugging or inspection."
     },
     {
       "name": "check_survey",
-      "description": "Parse a compact-format doc string, run all QA checks against the XML, and return findings."
+      "description": "Parse a compact-format doc string and run all QA checks. Use run_qa instead for the standard workflow."
+    },
+    {
+      "name": "generate_report",
+      "description": "Write a color-coded Excel QA report from existing findings. Use run_qa instead for the standard workflow."
     },
     {
       "name": "list_checks",
       "description": "List all registered QA checks with their IDs and descriptions."
-    },
-    {
-      "name": "generate_report",
-      "description": "Write a color-coded Excel QA report (Summary / Findings / Questions sheets)."
     }
   ],
   "compatibility": {

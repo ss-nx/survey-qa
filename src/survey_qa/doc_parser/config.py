@@ -3,7 +3,7 @@
 Environment variables:
     LITELLM_MODEL   LLM model identifier understood by litellm (default: gpt-4o-mini)
     QA_CACHE_DIR    Directory for diskcache (default: ~/.cache/survey_qa)
-    QA_LLM_RETRIES  Number of instructor retries on validation failure (default: 3)
+    QA_LLM_RETRIES  Max retries on a failed compact-format parse (default: 3)
 """
 
 from __future__ import annotations
