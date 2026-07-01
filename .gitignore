@@ -34,6 +34,9 @@ Thumbs.db
 # Customer fixture data
 tests/fixtures/survey.xml
 
+# MCP config is machine-specific (absolute paths)
+.cursor/mcp.json
+
 # Editor swap files (keep .cursor/ and .vscode/ shared configs)
 *.swp
 *.swo
